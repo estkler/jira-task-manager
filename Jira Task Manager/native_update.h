@@ -12,4 +12,9 @@ BOOL UpdateParseVersion(const wchar_t *text,UpdateVersion *out);
 int UpdateCompareVersion(UpdateVersion left,UpdateVersion right);
 UpdateStatus UpdateParseRelease(const char *json,size_t length,UpdateVersion current,UpdateRelease *out);
 BOOL UpdateUrlAllowed(const wchar_t *url);
+typedef struct UpdateCancel { volatile LONG cancelled; } UpdateCancel;
+typedef BOOL (*UpdateHttpSink)(const BYTE *bytes,DWORD length,void *context);
+UpdateStatus UpdateHttpGet(const wchar_t *url,const wchar_t *accept,DWORD limit,UpdateCancel *cancel,UpdateHttpSink sink,void *context,DWORD *http_status);
+UpdateStatus UpdateCheck(UpdateVersion current,UpdateCancel *cancel,UpdateRelease *out);
+UpdateStatus UpdateDownload(const UpdateRelease *release,HANDLE destination,UpdateCancel *cancel);
 #endif
