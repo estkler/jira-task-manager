@@ -1,0 +1,18 @@
+# Local builds, compilers and caches
+bin/
+.tools/
+.zig-cache*/
+zig-out/
+.publish/
+.worktrees/
+
+# User data and private diagnostic history must never be published
+diagnostics/
+settings.ini
+*.log
+*.running
+*.planned-update
+*.lnk
+*.dmp
+*.zip
+*.bak
