@@ -17,4 +17,10 @@ typedef BOOL (*UpdateHttpSink)(const BYTE *bytes,DWORD length,void *context);
 UpdateStatus UpdateHttpGet(const wchar_t *url,const wchar_t *accept,DWORD limit,UpdateCancel *cancel,UpdateHttpSink sink,void *context,DWORD *http_status);
 UpdateStatus UpdateCheck(UpdateVersion current,UpdateCancel *cancel,UpdateRelease *out);
 UpdateStatus UpdateDownload(const UpdateRelease *release,HANDLE destination,UpdateCancel *cancel);
+typedef struct UpdateStage { wchar_t directory[MAX_PATH],executable[MAX_PATH]; HANDLE directory_lock; } UpdateStage;
+UpdateStatus UpdateStageCreate(UpdateStage *out);
+void UpdateStageCleanup(UpdateStage *stage);
+UpdateStatus UpdateVerifyFile(HANDLE file,const UpdateRelease *release);
+UpdateStatus UpdateInspectFile(HANDLE file,UpdateRelease *out);
+BOOL UpdatePathSafe(const wchar_t *path,BOOL directory);
 #endif

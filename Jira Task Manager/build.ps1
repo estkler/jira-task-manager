@@ -25,10 +25,10 @@ try {
     & $compiler rc /nologo /fo 'bin\app.res' 'app.rc'
     if ($LASTEXITCODE -ne 0) { throw 'Resource compilation failed.' }
 
-    & $compiler cc -target x86_64-windows-gnu -Os -s -municode 'native.c' 'native_jira.c' 'native_notes.c' 'native_new_tasks.c' 'native_lifecycle.c' 'native_identity.c' 'bin\app.res' `
+    & $compiler cc -target x86_64-windows-gnu -Os -s -municode 'native.c' 'native_jira.c' 'native_notes.c' 'native_new_tasks.c' 'native_lifecycle.c' 'native_identity.c' 'native_update_model.c' 'native_update_http.c' 'native_update_files.c' 'bin\app.res' `
         -o (Join-Path 'bin' $OutputName) `
         '-Wl,--subsystem,windows' `
-        -lcomctl32 -ldwmapi -lgdi32 -lshell32 -lshlwapi -luxtheme -lwinhttp -ladvapi32 -lcrypt32 -lwtsapi32 -lole32 -luuid
+        -lcomctl32 -ldwmapi -lgdi32 -lshell32 -lshlwapi -luxtheme -lwinhttp -ladvapi32 -lcrypt32 -lbcrypt -lwtsapi32 -lole32 -luuid
     if ($LASTEXITCODE -ne 0) { throw 'Native compilation failed.' }
 }
 finally {
