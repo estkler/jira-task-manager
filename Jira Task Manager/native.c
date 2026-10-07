@@ -17,6 +17,7 @@
 #include "native_new_tasks.h"
 #include "native_lifecycle.h"
 #include "native_identity.h"
+#include "native_update.h"
 
 #define APP_VERSION L"0.9.29"
 #define APP_TITLE TASK_MANAGER_TITLE
@@ -3816,6 +3817,14 @@ static LONG WINAPI NativeCrashFilter(EXCEPTION_POINTERS *exception)
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, int show_command)
 {
     (void)previous;
+    int update_argc=0;
+    wchar_t **update_argv=CommandLineToArgvW(GetCommandLineW(),&update_argc);
+    if(update_argv&&update_argc>1&&!wcscmp(update_argv[1],L"--apply-update")){
+        int update_result=UpdateRunHelper(update_argc,update_argv);
+        LocalFree(update_argv);
+        return update_result;
+    }
+    if(update_argv)LocalFree(update_argv);
     HANDLE mutex = CreateMutexW(NULL, TRUE, L"Task Manager.Singleton");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         HWND existing = FindWindowW(L"Task Manager.Window", NULL);
