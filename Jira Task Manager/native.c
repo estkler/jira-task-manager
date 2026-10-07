@@ -19,7 +19,7 @@
 #include "native_identity.h"
 #include "native_update.h"
 
-#define APP_VERSION L"0.9.29"
+#define APP_VERSION L"0.9.30"
 #define APP_TITLE TASK_MANAGER_TITLE
 #define WM_TRAYICON (WM_APP + 1)
 

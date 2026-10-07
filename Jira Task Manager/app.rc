@@ -4,8 +4,8 @@
 1 RT_MANIFEST "app.manifest"
 
 1 VERSIONINFO
- FILEVERSION 0,9,29,0
- PRODUCTVERSION 0,9,29,0
+ FILEVERSION 0,9,30,0
+ PRODUCTVERSION 0,9,30,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -18,11 +18,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Jira Task Manager"
             VALUE "FileDescription", "Jira Task Manager"
-            VALUE "FileVersion", "0.9.29"
+            VALUE "FileVersion", "0.9.30"
             VALUE "InternalName", "JiraTaskManager"
             VALUE "OriginalFilename", "Jira Task Manager.exe"
             VALUE "ProductName", "Jira Task Manager"
-            VALUE "ProductVersion", "0.9.29"
+            VALUE "ProductVersion", "0.9.30"
         END
     END
     BLOCK "VarFileInfo"

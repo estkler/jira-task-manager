@@ -1,6 +1,33 @@
 # Jira Task Manager
 
-## Current version — 0.9.29
+## Current version — 0.9.30
+
+Manual native updates are available in Settings → About. Checking never runs at
+startup or on a background timer. A newer stable GitHub release offers a download,
+then a separately confirmed install/restart. Installation is blocked by active
+Jira/account requests, completion dialogs, comment drafts (including detached
+windows), note-save failures, active edits, or unsaved settings. State-save or
+helper-readiness failure leaves the application running. The timer's original
+start value, storage identity, credentials and shortcuts are not changed.
+
+For the first upgrade from 0.9.29, save your work and close the application normally,
+back up the old EXE and `%LOCALAPPDATA%/Task Manager/settings.ini`, then manually
+replace only the EXE in its existing folder. The GitHub asset is
+`Jira.Task.Manager.exe`; the installed filename remains `Jira Task Manager.exe`.
+Do not overwrite a running EXE or remove the backups. Later confirmed updates
+retain a uniquely named old-EXE backup and restore it if replacement/restart fails
+where the filesystem still permits recovery.
+
+Only stable releases from `estkler/jira-task-manager` are accepted, with the exact
+asset name, bounded size, SHA-256 digest, x64 PE and matching version. A missing or
+incorrect digest blocks installation. SHA-256 is not an independent author
+signature: channel trust depends on HTTPS and control of the GitHub repository.
+No external updater runtime, service, administrator elevation or Windows-security
+bypass is introduced. The update helper uses the same EXE in a separate native mode.
+
+Comment attachment viewing and tray alerts for new comments remain planned, not
+implemented in 0.9.30. Future comment alerts must share the existing Jira refresh
+interval; this version adds no extra Jira polling schedule.
 
 The display name, executable metadata and startup shortcut now use Jira Task Manager.
 Internal data, credential and window-class names remain unchanged to preserve settings,
@@ -65,7 +92,8 @@ highlight remains while its compact, non-indented context menu is open.
 The separate reporter-scope switch shows Jira issues reported by the current account,
 including issues assigned to other people. The All, Current, and Done tabs filter either
 assigned or reported issues; each scope remembers its selected tab and status filters.
-The switch uses a task card with an incoming/outgoing arrow for the current scope. A small amber dot means
+The approved trial switch uses an inbox tray for assigned tasks and a paper plane
+for reported tasks. A small blue dot in a reserved corner means
 that the other scope has new tasks or unread Jira comments not present in this scope.
 The status filter sits in the Status column header, visually separate from the scope switch.
 Issues also assigned to the current account appear in both relevant scopes without a duplicate
@@ -81,6 +109,10 @@ popover records the comment as seen on this computer. Existing comments form
 the first-load baseline; unread state is account-specific and survives a restart.
 Tasks observed without comments retain an empty-history baseline, so their first later
 comment from another person is also unread. Own comments are considered read and do not pulse.
+The comment feed distinguishes your own messages with a soft blue surface and a
+localized You/Вы marker; colleague messages retain a neutral surface. Ownership
+uses Jira account identifiers, not matching display names. Chronology and body
+alignment remain unchanged.
 
 The application uses Windows APIs only. It does not require .NET or third-party libraries.
 
