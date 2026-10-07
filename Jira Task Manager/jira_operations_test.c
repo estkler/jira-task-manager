@@ -19,7 +19,7 @@ static BOOL fake(JiraConnection *c,const wchar_t *method,const wchar_t *path,con
         else if(posts==1){assert(wcsstr(path,L"A-1"));assert(strstr(body,"hold-id"));}
         else if(posts==2){assert(wcsstr(path,L"A-2"));assert(strstr(body,"start-id"));}
         if(scenario==2 || (scenario==3&&posts==2)){wcscpy_s(c->error,256,L"Simulated ambiguous timeout");return FALSE;}
-    }else if(wcsstr(path,L"myself"))response="{\"displayName\":\"Test account\"}";
+    }else if(wcsstr(path,L"myself"))response="{\"displayName\":\"Test account\",\"key\":\"user-1\",\"name\":\"test-account\"}";
     else if(wcsstr(path,L"A-1/comment?")){
         assert(scenario==8);
         response=wcsstr(path,L"startAt=1")?comment_second:comment_first;
@@ -62,7 +62,9 @@ int main(void){
         assert(posts==(scenario==1?0:scenario==2?1:2));
     }
     JiraSnapshot snapshot={0};scenario=4;pages=posts=0;
-    assert(JiraLoad(&c,&snapshot)&&snapshot.count==2&&pages==2);JiraFreeSnapshot(&snapshot);
+    assert(JiraLoad(&c,&snapshot)&&snapshot.count==2&&pages==2);
+    assert(!wcscmp(snapshot.identity.key,L"user-1")&&!wcscmp(snapshot.identity.name,L"test-account"));
+    JiraFreeSnapshot(&snapshot);
     scenario=5;pages=posts=0;
     assert(!JiraLoad(&c,&snapshot)&&snapshot.count==0&&snapshot.items==NULL&&posts==0);
     scenario=7;pages=posts=0;

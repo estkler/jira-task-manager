@@ -10,6 +10,14 @@ static HWND s_pages[2][32];static int s_counts[2],s_tab;
 static BOOL s_busy,s_saved,s_connected;
 static BOOL s_initializing,s_has_account;
 static wchar_t s_original_url[768];
+static BOOL s_original_startup;
+static BOOL UpdateSettingsAccountBusy(void){return s_busy;}
+static BOOL UpdateSettingsDirty(void){
+    if(!s_window||!IsWindow(s_window))return FALSE;wchar_t url[768],interval[16],tray[16];
+    GetWindowTextW(s_url,url,768);GetWindowTextW(s_interval,interval,16);GetWindowTextW(GetDlgItem(s_window,213),tray,16);
+    return wcscmp(url,s_original_url)||GetWindowTextLengthW(s_token)>0||JiraParseInterval(interval)!=g_refresh_minutes||JiraParseInterval(tray)!=g_tray_task_count||
+        (SendMessageW(GetDlgItem(s_window,214),BM_GETCHECK,0,0)==BST_CHECKED)!=s_original_startup;
+}
 static HFONT s_font,s_small,s_bold,s_title;
 static HWND s_hover;
 static HANDLE s_thread;
@@ -125,6 +133,7 @@ static void LayoutSettings(void)
     PlaceSettings(222,244,preferences,80,25);PlaceSettings(213,width-26-42,preferences+4,36,18);
     PlaceSettings(214,26,preferences+34,field_width,25);PlaceSettings(223,26,preferences+64,field_width,28);
     PlaceSettings(241,14,height-42,180,28);PlaceSettings(IDCANCEL,width-162,height-42,66,28);PlaceSettings(IDOK,width-90,height-42,76,28);
+    PlaceSettings(235,26,143,width-52,28);PlaceSettings(242,26,172,260,28);PlaceSettings(234,26,206,220,28);PlaceSettings(236,26,242,width-52,20);PlaceSettings(238,26,266,150,28);
     int connected_ids[]={215,216,217};for(int i=0;i<3;i++)ShowWindow(GetDlgItem(s_window,connected_ids[i]),s_tab==0&&s_connected?SW_SHOW:SW_HIDE);
     int token_ids[]={211,218,219};for(int i=0;i<3;i++)ShowWindow(GetDlgItem(s_window,token_ids[i]),s_tab==0&&!s_connected?SW_SHOW:SW_HIDE);
     LayoutSettingsTabs();
@@ -145,7 +154,7 @@ static void UpdateSettingsLanguage(void)
     SetWindowTextW(GetDlgItem(s_window,214),g_russian?L"Запускать Jira Task Manager вместе с Windows":L"Start Jira Task Manager with Windows");
     SetWindowTextW(GetDlgItem(s_window,231),g_russian?L"Приложение для обработки статусов задач Jira.":L"A Jira task status management app.");
     SetWindowTextW(GetDlgItem(s_window,232),g_russian?L"Обновления":L"Updates");
-    SetWindowTextW(GetDlgItem(s_window,235),g_russian?L"Отдельный канал обновлений Native ещё не опубликован.":L"A separate Native update channel is not published yet.");
+    UpdateUiRender(s_window);
     SetWindowTextW(GetDlgItem(s_window,234),g_russian?L"Открыть папку диагностики":L"Open diagnostics folder");
     SetWindowTextW(GetDlgItem(s_window,236),g_russian?L"Обратная связь":L"Feedback");
     SetWindowTextW(GetDlgItem(s_window,238),g_russian?L"⚡ Быстрая связь":L"⚡ Quick contact");
@@ -185,6 +194,7 @@ static DWORD WINAPI CheckAccountWorker(void *arg)
 }
 static void BeginAccountCheck(void)
 {
+    if(UpdateUiBusy()||g_update_handoff){SetWindowTextW(s_note,g_russian?L"Дождитесь завершения операции обновления приложения.":L"Wait for the application update operation.");return;}
     if(g_jira_busy){SetWindowTextW(s_note,g_russian?L"Дождитесь завершения текущего запроса Jira и нажмите «Сохранить» снова.":L"Wait for the current Jira request, then click Save again.");return;}
     wchar_t interval[16],previous[768];GetWindowTextW(s_interval,interval,16);
     if(!JiraParseInterval(interval)){SetWindowTextW(s_note,g_russian?L"Интервал: целое число от 1 до 1440 минут.":L"Interval must be 1–1440 whole minutes.");return;}
@@ -246,12 +256,13 @@ static LRESULT CALLBACK SettingsProcedure(HWND window,UINT message,WPARAM wp,LPA
         swprintf(interval,16,L"%d",g_tray_task_count);SettingsControl(L"EDIT",interval,WS_TABSTOP|ES_NUMBER|ES_AUTOHSCROLL,340,174,36,18,213,0);
         SendMessageW(GetDlgItem(window,213),EM_SETLIMITTEXT,2,0);
         SettingsControl(L"BUTTON",g_russian?L"Запускать Jira Task Manager вместе с Windows":L"Start Jira Task Manager with Windows",WS_TABSTOP|BS_AUTOCHECKBOX,26,209,360,25,214,0);
-        SendMessageW(GetDlgItem(window,214),BM_SETCHECK,NativeStartupEnabled()?BST_CHECKED:BST_UNCHECKED,0);
+        s_original_startup=NativeStartupEnabled();SendMessageW(GetDlgItem(window,214),BM_SETCHECK,s_original_startup?BST_CHECKED:BST_UNCHECKED,0);
         s_note=SettingsControl(L"STATIC",L"",0,26,245,360,52,223,0);
         SettingsControl(L"STATIC",L"Jira Task Manager " APP_VERSION,0,26,60,360,28,230,1);
         SettingsControl(L"STATIC",g_russian?L"Приложение для обработки статусов задач Jira.":L"A Jira task status management app.",0,26,90,360,22,231,1);
         SettingsControl(L"STATIC",g_russian?L"Обновления":L"Updates",0,26,121,360,20,232,1);
-        SettingsControl(L"STATIC",g_russian?L"Отдельный канал обновлений Native ещё не опубликован.":L"A separate Native update channel is not published yet.",0,26,143,360,28,235,1);
+        SettingsControl(L"STATIC",L"",0,26,143,360,28,235,1);
+        SettingsControl(L"BUTTON",L"",WS_TABSTOP|BS_OWNERDRAW,26,172,260,28,242,1);
         SettingsControl(L"BUTTON",g_russian?L"Открыть папку диагностики":L"Open diagnostics folder",WS_TABSTOP|BS_OWNERDRAW,26,176,185,28,234,1);
         SettingsControl(L"STATIC",g_russian?L"Обратная связь":L"Feedback",0,26,218,360,20,236,1);
         SettingsControl(L"BUTTON",g_russian?L"⚡ Быстрая связь":L"⚡ Quick contact",WS_TABSTOP|BS_OWNERDRAW,26,241,136,28,238,1);
@@ -266,13 +277,15 @@ static LRESULT CALLBACK SettingsProcedure(HWND window,UINT message,WPARAM wp,LPA
             if(!wcscmp(name,L"EDIT"))SetWindowSubclass(child,SettingsEditProcedure,1,0);
             if(!wcscmp(name,L"BUTTON"))SetWindowSubclass(child,SettingsButtonProcedure,1,0);
         }
-        ApplyWindowCaptionTheme(window);s_initializing=FALSE;SettingsTab(0);return 0;
+        ApplyWindowCaptionTheme(window);s_initializing=FALSE;UpdateUiAttach(window);SettingsTab(0);return 0;
     }
     case WM_COMMAND:
+        if(LOWORD(wp)==242){if(u_state==UPDATE_UI_AVAILABLE)UpdateUiBeginDownload(window);else if(u_state==UPDATE_UI_READY)UpdateUiBeginInstall(window);else UpdateUiBeginCheck(window);return 0;}
         if(LOWORD(wp)==210&&HIWORD(wp)==EN_CHANGE&&!s_initializing&&!s_busy){wchar_t entered[768];GetWindowTextW(s_url,entered,768);s_connected=s_has_account&&!wcscmp(entered,s_original_url);LayoutSettings();return 0;}
         if(LOWORD(wp)>=200&&LOWORD(wp)<=201){SettingsTab(LOWORD(wp)-200);return 0;}
         if(LOWORD(wp)==IDOK&&!s_busy){BeginAccountCheck();return 0;}
         if(LOWORD(wp)==215&&!s_busy){
+            if(UpdateUiBusy()||g_update_handoff)return 0;
             if(g_jira_busy){SetWindowTextW(s_note,g_russian?L"Дождитесь завершения текущего запроса Jira перед выходом.":L"Wait for the current Jira request before signing out.");return 0;}
             wchar_t signed_out_url[768];GetWindowTextW(s_url,signed_out_url,768);
             s_busy=g_jira_busy=TRUE;
@@ -320,6 +333,7 @@ static LRESULT CALLBACK SettingsProcedure(HWND window,UINT message,WPARAM wp,LPA
     case WM_CLOSE:if(s_busy){MessageBeep(MB_ICONINFORMATION);return 0;}DestroyWindow(window);return 0;
     case WM_SIZE:if(s_url)LayoutSettings();return 0;
     case WM_DESTROY:
+        UpdateUiCancel();
         SetWindowTextW(s_token,L"");s_window=NULL;DeleteObject(s_font);DeleteObject(s_small);DeleteObject(s_bold);DeleteObject(s_title);
         if(s_saved&&!InterlockedCompareExchange(&g_jira_closing,0,0)){g_jira_stale=TRUE;PostMessageW(g_window,WM_COMMAND,IDC_REFRESH,0);}
         return 0;

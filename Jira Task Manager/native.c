@@ -99,6 +99,8 @@ static HANDLE g_jira_thread;
 static SYSTEMTIME g_updated_time;
 static wchar_t g_jira_message[256];
 static volatile LONG g_jira_closing;
+static BOOL g_update_handoff;
+static int g_completion_active_count;
 #define WM_JIRA_RESULT (WM_APP+20)
 typedef struct JiraJob {
     int action; /* 0 refresh, 1 transitions, 2 explicit transition, 3 switch, 4 read comments, 5 post comment */
@@ -275,7 +277,7 @@ static void LayoutControls(int width, int height);
 static void LayoutStatusFilter(void);
 static void UpdateFonts(void);
 static void UpdateTooltips(void);
-static void SaveSettings(void);
+static BOOL SaveSettings(void);
 static void UpdateTimer(void);
 static void UpdateSettingsLanguage(void);
 static void BeginStartEdit(void);
@@ -372,18 +374,20 @@ static void InitializeSettingsPath(void)
         TaskManagerMigrateSettingsAtRoot(local_app_data,g_settings_path,MAX_PATH);
 }
 
-static void SaveSettings(void)
+static BOOL SaveSettings(void)
 {
     wchar_t value[64];
+    BOOL saved=TRUE;
     swprintf(value, 64, L"%d", g_density);
-    WritePrivateProfileStringW(L"Interface", L"InterfaceSize", value, g_settings_path);
-    WritePrivateProfileStringW(L"Interface", L"Dark", g_dark ? L"1" : L"0", g_settings_path);
-    WritePrivateProfileStringW(L"Interface", L"Russian", g_russian ? L"1" : L"0", g_settings_path);
-    WritePrivateProfileStringW(L"Timer", L"Text", g_text_time ? L"1" : L"0", g_settings_path);
+    saved=WritePrivateProfileStringW(L"Interface", L"InterfaceSize", value, g_settings_path)&&saved;
+    saved=WritePrivateProfileStringW(L"Interface", L"Dark", g_dark ? L"1" : L"0", g_settings_path)&&saved;
+    saved=WritePrivateProfileStringW(L"Interface", L"Russian", g_russian ? L"1" : L"0", g_settings_path)&&saved;
+    saved=WritePrivateProfileStringW(L"Timer", L"Text", g_text_time ? L"1" : L"0", g_settings_path)&&saved;
     swprintf(value,64,L"%d",g_comments_mode);
-    WritePrivateProfileStringW(L"Interface",L"CommentsMode",value,g_settings_path);
+    saved=WritePrivateProfileStringW(L"Interface",L"CommentsMode",value,g_settings_path)&&saved;
     swprintf(value, 64, L"%llu", (unsigned long long)g_workday_started);
-    WritePrivateProfileStringW(L"Timer", L"Started", value, g_settings_path);
+    saved=WritePrivateProfileStringW(L"Timer", L"Started", value, g_settings_path)&&saved;
+    return saved;
 }
 
 static void LoadSettings(void)
@@ -999,22 +1003,30 @@ static void DrawControlIcon(HDC dc, int id, int cx, int cy, COLORREF color)
 
 static void DrawScopeIcon(HDC dc,RECT rect,COLORREF color,BOOL reported,BOOL attention)
 {
-    int cx=(rect.left+rect.right)/2,cy=(rect.top+rect.bottom)/2;
+    /* Keep the icon below/left of the badge corner, including a thick high-DPI stroke. */
+    int cx=(rect.left+rect.right)/2-D(4),cy=(rect.top+rect.bottom)/2+D(3);
     HPEN pen=CreatePen(PS_SOLID,max(1,D(1)),color);
     HGDIOBJ old_pen=SelectObject(dc,pen),old_brush=SelectObject(dc,GetStockObject(HOLLOW_BRUSH));
-    /* A task card with an incoming/outgoing arrow; the arrow remains large at small DPI. */
-    POINT card[]={{cx+D(2),cy-D(2)},{cx+D(2),cy-D(8)},
-        {cx-D(9),cy-D(8)},{cx-D(9),cy+D(8)},{cx+D(2),cy+D(8)},{cx+D(2),cy+D(6)}};
-    Polyline(dc,card,_countof(card));
-    MoveToEx(dc,cx-D(6),cy-D(4),NULL);LineTo(dc,cx-D(2),cy-D(4));
-    HPEN arrow=CreatePen(PS_SOLID,max(1,D(2)),color);SelectObject(dc,arrow);
-    int arrow_left=cx-D(2),arrow_right=cx+D(9),arrow_y=cy+D(2);
-    MoveToEx(dc,arrow_left,arrow_y,NULL);LineTo(dc,arrow_right,arrow_y);
-    int tip=reported?arrow_right:arrow_left,back=reported?tip-D(4):tip+D(4);
-    MoveToEx(dc,back,arrow_y-D(4),NULL);LineTo(dc,tip,arrow_y);LineTo(dc,back,arrow_y+D(4));
-    SelectObject(dc,old_brush);SelectObject(dc,old_pen);DeleteObject(arrow);DeleteObject(pen);
+    if(reported){
+        /* Outgoing: paper plane. Native line geometry, no image/font dependency. */
+        POINT plane[]={{cx-D(7),cy-D(3)},{cx+D(7),cy-D(7)},
+            {cx+D(3),cy+D(7)},{cx-D(1),cy+D(1)},{cx-D(7),cy-D(3)}};
+        Polyline(dc,plane,_countof(plane));
+        MoveToEx(dc,cx-D(1),cy+D(1),NULL);LineTo(dc,cx+D(7),cy-D(7));
+    }else{
+        /* Incoming: a simple inbox tray, matching the proposed compact silhouette. */
+        POINT tray[]={{cx-D(7),cy},{cx-D(4),cy-D(6)},
+            {cx+D(4),cy-D(6)},{cx+D(7),cy},
+            {cx+D(7),cy+D(6)},{cx-D(7),cy+D(6)},{cx-D(7),cy}};
+        Polyline(dc,tray,_countof(tray));
+        POINT lip[]={{cx-D(7),cy},{cx-D(3),cy},
+            {cx-D(1),cy+D(2)},{cx+D(1),cy+D(2)},
+            {cx+D(3),cy},{cx+D(7),cy}};
+        Polyline(dc,lip,_countof(lip));
+    }
+    SelectObject(dc,old_brush);SelectObject(dc,old_pen);DeleteObject(pen);
     if(attention){
-        HBRUSH dot=CreateSolidBrush(g_dark?RGB(255,182,81):RGB(218,120,19));
+        HBRUSH dot=CreateSolidBrush(g_dark?RGB(106,187,255):AccentColor());
         HPEN outline=CreatePen(PS_SOLID,1,WindowColor());
         old_brush=SelectObject(dc,dot);old_pen=SelectObject(dc,outline);
         Ellipse(dc,rect.right-D(9),rect.top+D(2),rect.right-D(2),rect.top+D(9));
@@ -1889,6 +1901,7 @@ static LRESULT CALLBACK TransitionInputProcedure(HWND window,UINT message,WPARAM
     if(message==WM_CREATE){
         dialog=(TransitionInputDialog*)((CREATESTRUCTW*)lp)->lpCreateParams;
         SetWindowLongPtrW(window,GWLP_USERDATA,(LONG_PTR)dialog);dialog->window=window;
+        ++g_completion_active_count;
         dialog->font=CreateFontW(-TransitionScale(12),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,
             DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");
         dialog->small_font=CreateFontW(-TransitionScale(10),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,
@@ -1953,7 +1966,7 @@ static LRESULT CALLBACK TransitionInputProcedure(HWND window,UINT message,WPARAM
     }
     if(message==WM_CLOSE){DestroyWindow(window);return 0;}
     if(message==WM_DRAWITEM&&dialog){DrawTransitionButton(dialog,(const DRAWITEMSTRUCT*)lp);return TRUE;}
-    if(message==WM_DESTROY&&dialog){if(dialog->font)DeleteObject(dialog->font);if(dialog->small_font)DeleteObject(dialog->small_font);if(dialog->title_font)DeleteObject(dialog->title_font);dialog->font=dialog->small_font=dialog->title_font=NULL;dialog->window=NULL;return 0;}
+    if(message==WM_DESTROY&&dialog){--g_completion_active_count;if(dialog->font)DeleteObject(dialog->font);if(dialog->small_font)DeleteObject(dialog->small_font);if(dialog->title_font)DeleteObject(dialog->title_font);dialog->font=dialog->small_font=dialog->title_font=NULL;dialog->window=NULL;return 0;}
     if(message==WM_CTLCOLORSTATIC||message==WM_CTLCOLOREDIT||message==WM_CTLCOLORBTN){
         HDC dc=(HDC)wp;BOOL edit=GetDlgCtrlID((HWND)lp)==IDC_TRANSITION_COMMENT;
         SetTextColor(dc,edit?TextColor():MutedColor());SetBkColor(dc,edit?PanelColor():PopoverColor());
@@ -2396,9 +2409,17 @@ static void PaintCommentList(HWND window,HDC dc,RECT client)
         const JiraComment *item=&g_popover.comments.items[i];
         int height=CommentCardHeight(dc,item,client.right),top=y;y+=height;
         if(y<0||top>client.bottom)continue;
+        BOOL own=JiraCommentIsOwn(item,&g_snapshot);
+        if(own){
+            HBRUSH card=CreateSolidBrush(g_dark?RGB(35,53,73):RGB(230,241,254));
+            HGDIOBJ brush=SelectObject(dc,card),pen=SelectObject(dc,GetStockObject(NULL_PEN));
+            RoundRect(dc,D(5),top+D(2),client.right-D(5),y-D(4),D(10),D(10));
+            SelectObject(dc,pen);SelectObject(dc,brush);DeleteObject(card);
+        }
         int avatar_x=D(10),avatar_y=top+D(8),text_x=D(49),text_right=client.right-D(14);
-        COLORREF avatar_color=g_dark?RGB(48,75,105):RGB(221,237,255);
-        COLORREF avatar_text=g_dark?RGB(195,222,255):RGB(31,104,183);
+        COLORREF avatar_color=own?(g_dark?RGB(48,75,105):RGB(205,226,251)):
+            (g_dark?RGB(48,53,60):RGB(232,236,242));
+        COLORREF avatar_text=own?(g_dark?RGB(195,222,255):RGB(31,104,183)):MutedColor();
         HBRUSH avatar_brush=CreateSolidBrush(avatar_color);HGDIOBJ old_brush=SelectObject(dc,avatar_brush);
         HGDIOBJ old_pen=SelectObject(dc,GetStockObject(NULL_PEN));
         Ellipse(dc,avatar_x,avatar_y,avatar_x+D(28),avatar_y+D(28));
@@ -2410,13 +2431,20 @@ static void PaintCommentList(HWND window,HDC dc,RECT client)
         DrawTextW(dc,initials,-1,&avatar,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
         SetTextColor(dc,TextColor());
         SIZE author_size={0};GetTextExtentPoint32W(dc,name,(int)wcslen(name),&author_size);
-        int date_space=D(105),author_right=min(text_right-date_space-D(8),text_x+author_size.cx+D(2));
+        int own_space=own?D(31):0;
+        int date_space=D(105),author_right=min(text_right-date_space-own_space-D(8),text_x+author_size.cx+D(2));
         author_right=max(text_x+D(20),author_right);
         RECT author={text_x,top+D(6),author_right,top+D(28)};
         DrawTextW(dc,name,-1,&author,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);
         SelectObject(dc,g_small_font);SetTextColor(dc,MutedColor());
+        if(own){
+            RECT badge={author_right+D(7),top+D(6),author_right+D(31),top+D(28)};
+            SetTextColor(dc,g_dark?RGB(170,211,255):RGB(31,104,183));
+            DrawTextW(dc,g_russian?L"Вы":L"You",-1,&badge,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
+            SetTextColor(dc,MutedColor());
+        }
         wchar_t date[48]=L"";FormatCommentDate(item->created,date,_countof(date));
-        RECT date_rect={author_right+D(7),top+D(6),text_right,top+D(28)};
+        RECT date_rect={author_right+own_space+D(7),top+D(6),text_right,top+D(28)};
         DrawTextW(dc,date,-1,&date_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
         SelectObject(dc,g_font);SetTextColor(dc,TextColor());
         RECT body={text_x,top+D(31),text_right,y-D(8)};
@@ -3054,7 +3082,7 @@ static DWORD WINAPI JiraWorker(void *parameter)
 static BOOL StartJiraJobWithInput(int action,const wchar_t *key,const wchar_t *transition,
     const wchar_t *field,const wchar_t *option,const wchar_t *comment,POINT anchor)
 {
-    if(g_jira_busy)return FALSE;
+    if(g_jira_busy||g_update_handoff)return FALSE;
     if(!CommitNoteEdit(TRUE))return FALSE;
     if(action!=0&&action!=4 && (g_jira_stale||!g_updated_time.wYear)){
         MessageBoxW(g_window,g_russian?L"Сначала обновите задачи Jira кнопкой обновления.":L"Refresh Jira successfully before changing tasks.",APP_TITLE,MB_OK|MB_ICONINFORMATION);return FALSE;
@@ -3521,7 +3549,8 @@ static void UpdateTooltips(void)
             L"Сейчас: назначены мне · перейти к поставленным мной%ls"):
         (g_reported_scope?L"Showing: reported by me · switch to assigned to me%ls":
             L"Showing: assigned to me · switch to reported by me%ls"),
-        attention?(g_russian?L" · есть обновления":L" · updates available"):L"");
+        attention?(g_russian?L" · в другом режиме новые задачи или непрочитанные комментарии":
+            L" · new tasks or unread comments in the other mode"):L"");
     const wchar_t *ru[]={L"Фильтр статусов этой вкладки",L"Обновить задачи Jira",g_comments_mode==0?L"Без комментариев → комментарии Jira":g_comments_mode==1?L"Комментарии Jira → локальные заметки":L"Локальные заметки → без комментариев",L"Переключить светлую / тёмную тему",L"Switch language / Язык",L"О приложении и подключении",L"Формат времени и анализ рабочего времени",g_scope_tip};
     const wchar_t *en[]={L"Status filter for this tab",L"Refresh Jira tasks",g_comments_mode==0?L"No comments → Jira comments":g_comments_mode==1?L"Jira comments → local notes":L"Local notes → no comments",L"Switch light / dark theme",L"Язык / Switch language",L"About and connection",L"Time format and work time analysis",g_scope_tip};
     for(int i=0;i<8;i++){
@@ -3531,10 +3560,12 @@ static void UpdateTooltips(void)
     }
 }
 
+#include "native_update_ui.h"
 #include "native_settings.h"
 
 static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_param, LPARAM l_param)
 {
+    if(UpdateUiHandleMessage(message,w_param,l_param))return 0;
     switch (message) {
     case WM_CREATE:
         g_window = window;
@@ -3787,6 +3818,7 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
     case WM_DESTROY:
         WTSUnRegisterSessionNotification(window);
         InterlockedExchange(&g_jira_closing,1);
+        UpdateUiShutdown();
         if(s_window)DestroyWindow(s_window);
         FreeTaskItems();JiraFreeSnapshot(&g_snapshot);
         SaveSettings();

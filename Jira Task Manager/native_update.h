@@ -25,5 +25,6 @@ UpdateStatus UpdateInspectFile(HANDLE file,UpdateRelease *out);
 BOOL UpdatePathSafe(const wchar_t *path,BOOL directory);
 typedef struct UpdateApplyRequest { DWORD parent_pid; ULONGLONG parent_created; wchar_t target[MAX_PATH]; UpdateRelease release; } UpdateApplyRequest;
 UpdateStatus UpdateLaunchHelper(const UpdateStage *stage,const UpdateApplyRequest *request,HANDLE *ready_event);
+UpdateStatus UpdateLaunchHelperTracked(const UpdateStage *stage,const UpdateApplyRequest *request,HANDLE *ready_event,HANDLE *helper_process);
 int UpdateRunHelper(int argc,wchar_t **argv);
 #endif

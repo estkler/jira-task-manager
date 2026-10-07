@@ -1,17 +1,169 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <assert.h>
 static wchar_t opened_file[32768],opened_parameters[32768];
 static HINSTANCE WINAPI CaptureShellOpen(HWND w,LPCWSTR op,LPCWSTR file,LPCWSTR params,LPCWSTR dir,INT show){
     (void)w;(void)op;(void)dir;(void)show;
     wcscpy_s(opened_file,32768,file?file:L"");wcscpy_s(opened_parameters,32768,params?params:L"");return (HINSTANCE)33;
 }
 BOOL CaptureJiraGetUrl(wchar_t *url,size_t capacity){return wcscpy_s(url,capacity,L"https://jira.example.test/jira/")==0;}
+BOOL CaptureJiraHasAccount(void){return FALSE;}
 #define ShellExecuteW CaptureShellOpen
 #define JiraGetUrl CaptureJiraGetUrl
+#define JiraHasAccount CaptureJiraHasAccount
 static BOOL WINAPI CaptureTaskMenu(HMENU,UINT,int,int,int,HWND,const RECT*);
 #define TrackPopupMenu CaptureTaskMenu
+#include "native_update.h"
+static HANDLE update_fixture_gate;
+static UpdateRelease update_fixture_release;
+static UpdateStatus update_fixture_check=UPDATE_NONE,update_fixture_download=UPDATE_NETWORK;
+static BOOL update_fail_thread,update_confirm_install;
+static BOOL update_fail_post;
+static BOOL WINAPI FixturePostMessage(HWND window,UINT message,WPARAM wp,LPARAM lp){
+    if(update_fail_post&&(message==WM_APP+41||message==WM_APP+42)){SetLastError(ERROR_NOT_ENOUGH_QUOTA);return FALSE;}
+    return PostMessageW(window,message,wp,lp);
+}
+static HANDLE update_launched_child;
+static HANDLE WINAPI FixtureCreateThread(LPSECURITY_ATTRIBUTES sa,SIZE_T stack,LPTHREAD_START_ROUTINE entry,LPVOID arg,DWORD flags,LPDWORD id){
+    if(update_fail_thread){SetLastError(ERROR_NOT_ENOUGH_MEMORY);return NULL;}return CreateThread(sa,stack,entry,arg,flags,id);
+}
+static int WINAPI FixtureMessageBox(HWND owner,LPCWSTR text,LPCWSTR title,UINT type){if(update_confirm_install)return IDYES;return MessageBoxW(owner,text,title,type);}
+static UpdateStatus FixtureLaunchHelper(const UpdateStage *stage,const UpdateApplyRequest *request,HANDLE *ready,HANDLE *process){
+    UpdateStatus status=UpdateLaunchHelperTracked(stage,request,ready,process);
+    if(status==UPDATE_OK&&update_confirm_install){DWORD wait=WaitForSingleObject(*ready,5000);if(wait!=WAIT_OBJECT_0){TerminateProcess(*process,UPDATE_CANCELLED);WaitForSingleObject(*process,2000);}assert(wait==WAIT_OBJECT_0);assert(DuplicateHandle(GetCurrentProcess(),*process,GetCurrentProcess(),&update_launched_child,0,FALSE,DUPLICATE_SAME_ACCESS));}
+    return status;
+}
+static UpdateStatus FixtureUpdateCheck(UpdateVersion current,UpdateCancel *cancel,UpdateRelease *out){
+    (void)current;WaitForSingleObject(update_fixture_gate,2000);if(cancel->cancelled)return UPDATE_CANCELLED;*out=update_fixture_release;return update_fixture_check;
+}
+static UpdateStatus FixtureUpdateDownload(const UpdateRelease *release,HANDLE destination,UpdateCancel *cancel){
+    (void)release;WaitForSingleObject(update_fixture_gate,2000);if(cancel->cancelled)return UPDATE_CANCELLED;if(update_fixture_download!=UPDATE_OK)return update_fixture_download;
+    wchar_t fixture[MAX_PATH];GetModuleFileNameW(NULL,fixture,MAX_PATH);*wcsrchr(fixture,L'\\')=0;wcscat_s(fixture,MAX_PATH,L"\\update_test_fixture.exe");
+    HANDLE source=CreateFileW(fixture,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);if(source==INVALID_HANDLE_VALUE)return UPDATE_IO;
+    BYTE bytes[16384];DWORD got,written;UpdateStatus status=UPDATE_OK;for(;;){if(!ReadFile(source,bytes,sizeof(bytes),&got,NULL)){status=UPDATE_IO;break;}if(!got)break;if(!WriteFile(destination,bytes,got,&written,NULL)||written!=got){status=UPDATE_IO;break;}}
+    CloseHandle(source);return status;
+}
+#define UpdateCheck FixtureUpdateCheck
+#define UpdateDownload FixtureUpdateDownload
+#define CreateThread FixtureCreateThread
+#define MessageBoxW FixtureMessageBox
+#define UpdateLaunchHelperTracked FixtureLaunchHelper
+#define PostMessageW FixturePostMessage
 #include "native.c"
 #include <assert.h>
+static UpdateWork *fake_update(int action,UpdateStatus status,UINT generation){
+    UpdateWork *work=calloc(1,sizeof(*work));assert(work);work->references=1;work->action=action;work->status=status;work->generation=generation;work->release.version=(UpdateVersion){0,9,30};work->release.asset_id=123;return work;
+}
+static void drain_update(void){
+    for(int i=0;i<300;i++){
+        MSG msg;while(PeekMessageW(&msg,g_window,WM_UPDATE_RESULT,WM_UPDATE_READY,PM_REMOVE))assert(UpdateUiHandleMessage(msg.message,msg.wParam,msg.lParam));
+        if(!u_work)return;Sleep(10);
+    }assert(!"Update worker did not finish");
+}
+static void test_update_about_controls(HWND settings){
+    assert(!u_work&&u_state==UPDATE_UI_IDLE);SettingsTab(1);wchar_t text[256];
+    for(int language=0;language<2;language++){
+        g_russian=language;UpdateSettingsLanguage();GetWindowTextW(GetDlgItem(settings,242),text,256);
+        assert(!wcscmp(text,language?L"Проверить обновления":L"Check for updates"));GetWindowTextW(GetDlgItem(settings,235),text,256);assert(wcsstr(text,L"GitHub Releases")&&!wcsstr(text,L"Native"));
+    }
+    update_fixture_gate=CreateEventW(NULL,TRUE,FALSE,NULL);assert(update_fixture_gate);
+    UpdateUiBeginCheck(settings);assert(u_state==UPDATE_UI_CHECKING&&u_work);UpdateWork *first=u_work;
+    UpdateUiBeginCheck(settings);assert(u_work==first); /* second click cannot replace a live worker */
+    SetEvent(update_fixture_gate);drain_update();assert(u_state==UPDATE_UI_CURRENT);GetWindowTextW(GetDlgItem(settings,235),text,256);assert(wcsstr(text,L"опубликованных"));
+    UpdateWork *result=fake_update(0,UPDATE_OK,u_generation);assert(UpdateUiHandleMessage(WM_UPDATE_RESULT,0,(LPARAM)result));assert(u_state==UPDATE_UI_AVAILABLE);GetWindowTextW(GetDlgItem(settings,235),text,256);assert(wcsstr(text,L"0.9.30"));
+    ResetEvent(update_fixture_gate);UpdateUiBeginDownload(settings);assert(u_state==UPDATE_UI_DOWNLOADING);first=u_work;UpdateUiBeginDownload(settings);assert(u_work==first);
+    SetEvent(update_fixture_gate);drain_update();assert(u_state==UPDATE_UI_ERROR);
+    result=fake_update(0,UPDATE_INVALID,u_generation);UpdateUiHandleMessage(WM_UPDATE_RESULT,0,(LPARAM)result);assert(u_state==UPDATE_UI_ERROR);
+    UpdateUiBeginCheck(settings);drain_update();assert(u_state==UPDATE_UI_CURRENT);
+    wchar_t fixture[MAX_PATH];GetModuleFileNameW(NULL,fixture,MAX_PATH);*wcsrchr(fixture,L'\\')=0;wcscat_s(fixture,MAX_PATH,L"\\update_test_fixture.exe");
+    HANDLE file=CreateFileW(fixture,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);assert(file!=INVALID_HANDLE_VALUE);assert(UpdateInspectFile(file,&u_release)==UPDATE_OK);CloseHandle(file);
+    u_state=UPDATE_UI_AVAILABLE;update_fixture_download=UPDATE_OK;UpdateUiBeginDownload(settings);drain_update();assert(u_state==UPDATE_UI_READY);assert(UpdatePathSafe(u_stage.executable,FALSE));UpdateUiCancel();UpdateUiAttach(settings);update_fixture_download=UPDATE_NETWORK;
+    for(int dpi=96;dpi<=192;dpi+=48)for(int theme=0;theme<2;theme++)for(int language=0;language<2;language++){
+        g_dpi=dpi;g_dark=theme;g_russian=language;RecreateBrushes();SetWindowPos(settings,NULL,0,0,S(430),S(348),SWP_NOMOVE|SWP_NOZORDER);LayoutSettings();
+        for(int state=UPDATE_UI_IDLE;state<=UPDATE_UI_ERROR;state++){
+            u_state=state;UpdateUiRender(settings);RECT client;GetClientRect(settings,&client);
+            int ids[]={235,242,234,236,238};for(int i=0;i<5;i++){RECT bounds;GetWindowRect(GetDlgItem(settings,ids[i]),&bounds);MapWindowPoints(NULL,settings,(POINT*)&bounds,2);assert(bounds.left>=0&&bounds.right<=client.right&&bounds.top>=0&&bounds.bottom<=client.bottom-S(52));}
+            /* Measure with freshly scaled fonts, not the settings window's old DPI font. */
+            HDC dc=GetDC(settings);
+            for(int i=0;i<5;i++){
+                HWND control=GetDlgItem(settings,ids[i]);RECT bounds;GetClientRect(control,&bounds);
+                LOGFONTW font={0};GetObjectW(ids[i]==235?s_small:s_font,sizeof(font),&font);
+                font.lfHeight=-S(ids[i]==235?10:12);HFONT scaled=CreateFontIndirectW(&font);
+                HGDIOBJ old=SelectObject(dc,scaled);wchar_t caption[256];GetWindowTextW(control,caption,256);
+                if(ids[i]==242||ids[i]==234||ids[i]==238){SIZE size;GetTextExtentPoint32W(dc,caption,(int)wcslen(caption),&size);assert(size.cx<=bounds.right-S(20));assert(size.cy<=bounds.bottom);}
+                else{RECT text={0,0,bounds.right,0};DrawTextW(dc,caption,-1,&text,DT_CALCRECT|DT_WORDBREAK|DT_NOPREFIX);assert(text.bottom<=bounds.bottom);}
+                SelectObject(dc,old);DeleteObject(scaled);
+            }
+            ReleaseDC(settings,dc);
+        }
+    }
+    g_dpi=144;g_dark=FALSE;g_russian=TRUE;RecreateBrushes();u_state=UPDATE_UI_IDLE;UpdateUiRender(settings);SetWindowPos(settings,NULL,0,0,700,700,SWP_NOMOVE|SWP_NOZORDER);LayoutSettings();SettingsTab(0);CloseHandle(update_fixture_gate);update_fixture_gate=NULL;
+}
+static void test_update_stale_result(HWND settings){
+    UpdateUiCancel();UINT old=u_generation;UpdateWork *result=fake_update(0,UPDATE_OK,old);UpdateUiCancel();UpdateUiAttach(settings);
+    assert(UpdateUiHandleMessage(WM_UPDATE_RESULT,0,(LPARAM)result));assert(u_state==UPDATE_UI_IDLE);
+    update_fixture_gate=CreateEventW(NULL,TRUE,FALSE,NULL);UpdateUiBeginCheck(settings);assert(u_work);
+    HANDLE thread=NULL;assert(DuplicateHandle(GetCurrentProcess(),u_work->thread,GetCurrentProcess(),&thread,SYNCHRONIZE,FALSE,0));
+    UpdateUiCancel();UpdateUiAttach(settings);SetEvent(update_fixture_gate);assert(WaitForSingleObject(thread,2000)==WAIT_OBJECT_0);CloseHandle(thread);drain_update();assert(u_state==UPDATE_UI_IDLE);CloseHandle(update_fixture_gate);update_fixture_gate=NULL;
+}
+static void test_update_spawn_failure(HWND settings){
+    assert(UpdateStageCreate(&u_stage)==UPDATE_OK);wchar_t fixture[MAX_PATH];GetModuleFileNameW(NULL,fixture,MAX_PATH);*wcsrchr(fixture,L'\\')=0;wcscat_s(fixture,MAX_PATH,L"\\update_test_fixture.exe");assert(CopyFileW(fixture,u_stage.executable,TRUE));
+    HANDLE file=CreateFileW(u_stage.executable,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);assert(file!=INVALID_HANDLE_VALUE);assert(UpdateInspectFile(file,&u_release)==UPDATE_OK);CloseHandle(file);
+    u_state=UPDATE_UI_READY;update_fail_thread=update_confirm_install=TRUE;UpdateUiBeginInstall(settings);update_fail_thread=update_confirm_install=FALSE;
+    assert(update_launched_child);DWORD wait=WaitForSingleObject(update_launched_child,1000);
+    if(wait!=WAIT_OBJECT_0){TerminateProcess(update_launched_child,UPDATE_CANCELLED);WaitForSingleObject(update_launched_child,2000);}CloseHandle(update_launched_child);update_launched_child=NULL;
+    assert(wait==WAIT_OBJECT_0);assert(IsWindow(g_window)&&!g_allow_close&&!u_work);UpdateUiCancel();UpdateUiAttach(settings);
+}
+static void test_update_state_save(void){
+    wchar_t temp[MAX_PATH],path[MAX_PATH],previous[MAX_PATH],stored[64];GetTempPathW(MAX_PATH,temp);assert(GetTempFileNameW(temp,L"uts",0,path));wcscpy_s(previous,MAX_PATH,g_settings_path);wcscpy_s(g_settings_path,MAX_PATH,path);ULONGLONG started=g_workday_started;g_workday_started=123456789;
+    assert(SaveSettings());GetPrivateProfileStringW(L"Timer",L"Started",L"",stored,64,path);assert(!wcscmp(stored,L"123456789")&&g_workday_started==123456789);assert(DeleteFileW(path));
+    wcscpy_s(g_settings_path,MAX_PATH,L"C:\\not-existing-update-test-folder\\settings.ini");assert(!SaveSettings());g_workday_started=started;wcscpy_s(g_settings_path,MAX_PATH,previous);
+}
+static void test_update_ready_rechecks_real_helper(HWND settings){
+    assert(UpdateStageCreate(&u_stage)==UPDATE_OK);wchar_t fixture[MAX_PATH];GetModuleFileNameW(NULL,fixture,MAX_PATH);*wcsrchr(fixture,L'\\')=0;wcscat_s(fixture,MAX_PATH,L"\\update_test_fixture.exe");assert(CopyFileW(fixture,u_stage.executable,TRUE));
+    HANDLE file=CreateFileW(u_stage.executable,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);assert(file!=INVALID_HANDLE_VALUE);assert(UpdateInspectFile(file,&u_release)==UPDATE_OK);CloseHandle(file);
+    u_state=UPDATE_UI_READY;update_confirm_install=TRUE;UpdateUiBeginInstall(settings);update_confirm_install=FALSE;assert(u_work&&update_launched_child);
+    HWND panel=CreateWindowExW(0,L"STATIC",L"",WS_POPUP,0,0,100,100,NULL,NULL,g_instance,NULL);
+    HWND input=CreateWindowExW(0,L"EDIT",L"draft",WS_CHILD,0,0,80,20,panel,NULL,g_instance,NULL);assert(panel&&input);
+    g_attached_popover.window=panel;g_attached_popover.input=input;g_attached_popover.kind=1;
+    drain_update();DWORD wait=WaitForSingleObject(update_launched_child,1000);
+    /* Always stop the owned fixture before any assertion: it must never apply on test exit. */
+    if(wait!=WAIT_OBJECT_0){TerminateProcess(update_launched_child,UPDATE_CANCELLED);WaitForSingleObject(update_launched_child,2000);}CloseHandle(update_launched_child);update_launched_child=NULL;
+    assert(wait==WAIT_OBJECT_0&&IsWindow(g_window)&&!u_handoff&&!g_allow_close);
+    assert(u_state==UPDATE_UI_ERROR&&u_error==UPDATE_BUSY&&wcsstr(u_reason,L"черновики"));
+    wchar_t draft[16];GetWindowTextW(input,draft,16);assert(!wcscmp(draft,L"draft"));
+    memset(&g_attached_popover,0,sizeof(g_attached_popover));DestroyWindow(panel);UpdateUiCancel();UpdateUiAttach(settings);
+}
+static void test_update_failed_post_cleanup(HWND settings){
+    wchar_t fixture[MAX_PATH];GetModuleFileNameW(NULL,fixture,MAX_PATH);*wcsrchr(fixture,L'\\')=0;wcscat_s(fixture,MAX_PATH,L"\\update_test_fixture.exe");
+    HANDLE file=CreateFileW(fixture,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);assert(file!=INVALID_HANDLE_VALUE);assert(UpdateInspectFile(file,&u_release)==UPDATE_OK);CloseHandle(file);
+    update_fixture_gate=CreateEventW(NULL,TRUE,TRUE,NULL);assert(update_fixture_gate);update_fixture_download=UPDATE_OK;update_fail_post=TRUE;u_state=UPDATE_UI_AVAILABLE;UpdateUiBeginDownload(settings);assert(u_work);
+    HANDLE thread=NULL;assert(DuplicateHandle(GetCurrentProcess(),u_work->thread,GetCurrentProcess(),&thread,SYNCHRONIZE,FALSE,0));assert(WaitForSingleObject(thread,3000)==WAIT_OBJECT_0);CloseHandle(thread);
+    wchar_t staged_file[MAX_PATH],staged_directory[MAX_PATH];wcscpy_s(staged_file,MAX_PATH,u_work->stage.executable);wcscpy_s(staged_directory,MAX_PATH,u_work->stage.directory);
+    assert(u_work->status==UPDATE_OK&&GetFileAttributesW(staged_file)!=INVALID_FILE_ATTRIBUTES);
+    MSG message;assert(!PeekMessageW(&message,g_window,WM_UPDATE_RESULT,WM_UPDATE_READY,PM_REMOVE));
+    UpdateUiCancel();assert(GetFileAttributesW(staged_file)==INVALID_FILE_ATTRIBUTES&&GetFileAttributesW(staged_directory)==INVALID_FILE_ATTRIBUTES);
+    update_fail_post=FALSE;update_fixture_download=UPDATE_NETWORK;CloseHandle(update_fixture_gate);update_fixture_gate=NULL;UpdateUiAttach(settings);wchar_t reason[256];assert(UpdateInstallAllowed(reason,256));
+}
+static void test_install_clean(void){wchar_t reason[256];assert(UpdateInstallAllowed(reason,256));}
+static void test_install_blocks_drafts(HWND settings){
+    wchar_t reason[256];test_install_clean();g_jira_busy=TRUE;assert(!UpdateInstallAllowed(reason,256));g_jira_busy=FALSE;
+    s_busy=TRUE;assert(!UpdateInstallAllowed(reason,256));s_busy=FALSE;
+    g_completion_active_count=1;assert(!UpdateInstallAllowed(reason,256));g_completion_active_count=0;
+    g_editing_start=TRUE;assert(!UpdateInstallAllowed(reason,256));g_editing_start=FALSE;g_editing_note=TRUE;assert(!UpdateInstallAllowed(reason,256));g_editing_note=FALSE;
+    HWND panel=CreateWindowExW(0,L"STATIC",L"",WS_POPUP,0,0,100,100,NULL,NULL,g_instance,NULL);
+    HWND input=CreateWindowExW(0,L"EDIT",L" ",WS_CHILD,0,0,80,20,panel,NULL,g_instance,NULL);assert(panel&&input);
+    g_attached_popover.window=panel;g_attached_popover.input=input;g_attached_popover.kind=1;assert(!UpdateInstallAllowed(reason,256));
+    u_state=UPDATE_UI_APPLYING;UpdateWork *result=fake_update(2,UPDATE_OK,u_generation);UpdateUiHandleMessage(WM_UPDATE_READY,0,(LPARAM)result);assert(!g_allow_close&&IsWindow(g_window));assert(GetWindowTextLengthW(input)==1);
+    memset(&g_attached_popover,0,sizeof(g_attached_popover));TaskPopover first={0},second={0};first.window=panel;first.input=input;first.kind=1;second.next=&first;g_detached_popovers=&second;assert(!UpdateInstallAllowed(reason,256));
+    SetWindowTextW(input,L"");first.kind=2;first.note_save_failed=TRUE;assert(!UpdateInstallAllowed(reason,256));first.note_save_failed=FALSE;assert(UpdateInstallAllowed(reason,256));g_detached_popovers=NULL;DestroyWindow(panel);
+    wchar_t url[768],interval[16];GetWindowTextW(s_url,url,768);GetWindowTextW(s_interval,interval,16);
+    SetWindowTextW(s_url,L"https://different.example.test");assert(!UpdateInstallAllowed(reason,256));SetWindowTextW(s_url,url);
+    SetWindowTextW(s_token,L" ");assert(!UpdateInstallAllowed(reason,256));SetWindowTextW(s_token,L"");
+    SetWindowTextW(s_interval,L"31");assert(!UpdateInstallAllowed(reason,256));SetWindowTextW(s_interval,interval);test_install_clean();u_state=UPDATE_UI_IDLE;UpdateUiRender(settings);
+    wchar_t tray[16];GetWindowTextW(GetDlgItem(settings,213),tray,16);SetWindowTextW(GetDlgItem(settings,213),L"0");assert(!UpdateInstallAllowed(reason,256));SetWindowTextW(GetDlgItem(settings,213),tray);
+    BOOL startup=SendMessageW(GetDlgItem(settings,214),BM_GETCHECK,0,0)==BST_CHECKED;SendMessageW(GetDlgItem(settings,214),BM_SETCHECK,startup?BST_UNCHECKED:BST_CHECKED,0);assert(!UpdateInstallAllowed(reason,256));SendMessageW(GetDlgItem(settings,214),BM_SETCHECK,startup?BST_CHECKED:BST_UNCHECKED,0);test_install_clean();
+}
 static wchar_t captured_comment_action[256];
 static BOOL WINAPI CaptureTaskMenu(HMENU menu,UINT flags,int x,int y,int reserved,HWND owner,const RECT *rect){
     (void)flags;(void)x;(void)y;(void)reserved;(void)owner;(void)rect;
@@ -153,6 +305,7 @@ int main(void) {
     WNDCLASSW wc={0};wc.lpfnWndProc=SettingsProcedure;wc.hInstance=g_instance;wc.lpszClassName=L"Native.Settings.Test";RegisterClassW(&wc);
     HWND settings=CreateWindowExW(0,wc.lpszClassName,L"",WS_POPUP,0,0,700,700,g_window,NULL,g_instance,NULL);
     assert(settings&&s_url&&s_interval);
+    test_update_about_controls(settings);test_update_stale_result(settings);test_install_blocks_drafts(settings);test_update_state_save();test_update_spawn_failure(settings);test_update_ready_rechecks_real_helper(settings);test_update_failed_post_cleanup(settings);
     wchar_t temp[MAX_PATH],root[MAX_PATH],diagnostics[MAX_PATH];GetTempPathW(MAX_PATH,temp);
     GetTempFileNameW(temp,L"ftd",0,root);DeleteFileW(root);
     swprintf(g_settings_path,MAX_PATH,L"%ls\\nested\\settings.ini",root);
@@ -241,6 +394,7 @@ int main(void) {
     assert(RatingScoreForOption(done_transition.ratings[4].value,4)==4);
     TransitionInputDialog transition_input={0};
     HWND transition_window=CreateTransitionInputWindow(&transition_input,&done_transition,L"T-2",FALSE);
+    wchar_t update_reason[256];assert(g_completion_active_count==1&&!UpdateInstallAllowed(update_reason,256));
     assert(!wcscmp(transition_input.placeholder,L"Комментарий к задаче: Zulu active task with a very long name"));
     assert(transition_window&&!GetDlgItem(transition_window,IDC_TRANSITION_RATING));
     for(int i=1;i<6;i++)assert(GetDlgItem(transition_window,IDC_TRANSITION_RATING+i));
@@ -296,6 +450,7 @@ int main(void) {
     SendMessageW(GetDlgItem(transition_window,IDC_TRANSITION_REMEMBER),BM_SETCHECK,BST_CHECKED,0);
     SendMessageW(transition_window,WM_COMMAND,IDOK,0);
     assert(transition_input.accepted&&transition_input.remember_comment&&!wcscmp(transition_input.option_id,L"15714")&&!wcscmp(transition_input.comment,L"Готово"));
+    assert(g_completion_active_count==0);
     int dialog_dpis[]={96,144,192};
     for(int dpi_index=0;dpi_index<3;dpi_index++){
         g_dpi=dialog_dpis[dpi_index];

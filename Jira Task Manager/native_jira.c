@@ -11,6 +11,13 @@
 
 static BOOL fail(JiraConnection *c,const wchar_t *message){wcsncpy_s(c->error,256,message,_TRUNCATE);return FALSE;}
 static BOOL field(const NJDoc *d,int obj,const char *key,wchar_t *out,size_t cap){return nj_string(d,nj_get(d,obj,key),out,cap);}
+static void user_identity(const NJDoc *doc,int user,JiraUserIdentity *identity)
+{
+    memset(identity,0,sizeof(*identity));
+    field(doc,user,"accountId",identity->account_id,_countof(identity->account_id));
+    field(doc,user,"key",identity->key,_countof(identity->key));
+    field(doc,user,"name",identity->name,_countof(identity->name));
+}
 void JiraFreeSnapshot(JiraSnapshot *s){free(s->items);memset(s,0,sizeof(*s));}
 
 static void append_comment_text(const NJDoc *doc,int token,wchar_t *out,size_t capacity,size_t *used)
@@ -67,6 +74,16 @@ void JiraFreeComments(JiraComments *comments)
     free(comments->items);memset(comments,0,sizeof(*comments));
 }
 
+BOOL JiraCommentIsOwn(const JiraComment *comment,const JiraSnapshot *snapshot)
+{
+    if(!comment||!snapshot)return FALSE;
+    const JiraUserIdentity *author=&comment->identity,*self=&snapshot->identity;
+    /* Never use displayName: different users may share it, and it may change. */
+    if(author->account_id[0]&&self->account_id[0])return !wcscmp(author->account_id,self->account_id);
+    if(author->key[0]&&self->key[0])return !wcscmp(author->key,self->key);
+    return author->name[0]&&self->name[0]&&!wcscmp(author->name,self->name);
+}
+
 static int CompareCommentChronology(const void *left,const void *right)
 {
     const JiraComment *a=left,*b=right;
@@ -94,6 +111,7 @@ BOOL JiraParseComments(const char *json,size_t length,JiraComments *comments,int
         if(!field(&doc,at,"id",item->id,_countof(item->id))||!item->id[0]||
             !field(&doc,at,"created",item->created,_countof(item->created)))goto end;
         field(&doc,nj_get(&doc,at,"author"),"displayName",item->author,_countof(item->author));
+        user_identity(&doc,nj_get(&doc,at,"author"),&item->identity);
         append_comment_text(&doc,nj_get(&doc,at,"body"),item->body,_countof(item->body),&used);
         at=doc.tokens[at].next;
     }
@@ -390,6 +408,7 @@ static BOOL JiraLoadAccount(JiraConnection *c,JiraSnapshot *result)
     char *data=NULL;size_t length=0;NJDoc d={0};
     if(!request(c,L"GET",L"/rest/api/2/myself",NULL,&data,&length))return FALSE;
     BOOL ok=nj_parse(&d,data,length)&&field(&d,0,"displayName",result->account,256);
+    if(ok)user_identity(&d,0,&result->identity);
     nj_free(&d);free(data);return ok?TRUE:fail(c,L"Unexpected Jira account response.");
 }
 

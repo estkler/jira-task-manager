@@ -58,7 +58,8 @@ static HANDLE stage_lock(const wchar_t *source,wchar_t directory[MAX_PATH]){
     HANDLE lock=CreateFileW(directory,GENERIC_READ|READ_CONTROL,FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,NULL);
     if(lock!=INVALID_HANDLE_VALUE&&(!private_directory(lock)||!UpdatePathSafe(directory,TRUE))){CloseHandle(lock);return INVALID_HANDLE_VALUE;}return lock;
 }
-UpdateStatus UpdateLaunchHelper(const UpdateStage *stage,const UpdateApplyRequest *r,HANDLE *ready_event){
+UpdateStatus UpdateLaunchHelperTracked(const UpdateStage *stage,const UpdateApplyRequest *r,HANDLE *ready_event,HANDLE *helper_process){
+    if(helper_process)*helper_process=NULL;
     if(!ready_event)return UPDATE_INVALID;*ready_event=NULL;if(!stage||!r||!_wcsicmp(stage->executable,r->target))return UPDATE_INVALID;
     HANDLE parent=parent_open(r);if(!parent)return UPDATE_INVALID;CloseHandle(parent);
     wchar_t directory[MAX_PATH];HANDLE dir=stage_lock(stage->executable,directory);if(dir==INVALID_HANDLE_VALUE)return UPDATE_INVALID;
@@ -73,9 +74,10 @@ UpdateStatus UpdateLaunchHelper(const UpdateStage *stage,const UpdateApplyReques
     int count=swprintf(command,_countof(command),L"\"%ls\" --apply-update %lu %llu \"%ls\" %lu.%lu.%lu %lu %ls \"%ls\"",stage->executable,r->parent_pid,r->parent_created,r->target,r->release.version.major,r->release.version.minor,r->release.version.patch,r->release.size,sha,event_name);
     STARTUPINFOW si={sizeof(si)};PROCESS_INFORMATION pi;
     if(count<0||!CreateProcessW(stage->executable,command,NULL,NULL,FALSE,CREATE_NO_WINDOW,NULL,directory,&si,&pi)){CloseHandle(event);result=UPDATE_IO;goto done;}
-    CloseHandle(pi.hThread);CloseHandle(pi.hProcess);*ready_event=event;result=UPDATE_OK;
+    CloseHandle(pi.hThread);if(helper_process)*helper_process=pi.hProcess;else CloseHandle(pi.hProcess);*ready_event=event;result=UPDATE_OK;
 done:if(file!=INVALID_HANDLE_VALUE)CloseHandle(file);CloseHandle(dir);return result;
 }
+UpdateStatus UpdateLaunchHelper(const UpdateStage *stage,const UpdateApplyRequest *r,HANDLE *ready_event){return UpdateLaunchHelperTracked(stage,r,ready_event,NULL);}
 static BOOL move_file(const UpdateApplyOps *ops,HANDLE file,const wchar_t *from,const wchar_t *to){
     if(ops&&ops->move)return ops->move(from,to);
     DWORD bytes=(DWORD)(wcslen(to)*sizeof(wchar_t)),size=(DWORD)offsetof(FILE_RENAME_INFO,FileName)+bytes;

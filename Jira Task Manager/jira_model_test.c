@@ -47,5 +47,28 @@ int main(void){
     JiraFreeComments(&comments);
     const char *bad_comments="{\"comments\":null}";
     assert(!JiraParseComments(bad_comments,strlen(bad_comments),&comments,&total,&start));
+    /* A display-name collision must never paint a colleague's message as ours. */
+    const char *authors="{\"startAt\":0,\"total\":4,\"comments\":["
+        "{\"id\":\"1\",\"created\":\"2026-10-07T10:00:00\",\"body\":\"Mine\",\"author\":{\"displayName\":\"Alex\",\"key\":\"user-1\",\"name\":\"alex\"}},"
+        "{\"id\":\"2\",\"created\":\"2026-10-07T10:01:00\",\"body\":\"Colleague\",\"author\":{\"displayName\":\"Alex\",\"key\":\"user-2\",\"name\":\"alex2\"}},"
+        "{\"id\":\"3\",\"created\":\"2026-10-07T10:02:00\",\"body\":\"Unknown\",\"author\":{\"displayName\":\"Alex\"}},"
+        "{\"id\":\"4\",\"created\":\"2026-10-07T10:03:00\",\"body\":\"Cloud\",\"author\":{\"displayName\":\"Renamed Alex\",\"accountId\":\"cloud-1\"}}]}";
+    assert(JiraParseComments(authors,strlen(authors),&comments,&total,&start));
+    JiraSnapshot self={0};wcscpy_s(self.account,256,L"Alex");
+    wcscpy_s(self.identity.key,256,L"user-1");wcscpy_s(self.identity.name,256,L"alex");
+    assert(JiraCommentIsOwn(&comments.items[0],&self));
+    assert(!JiraCommentIsOwn(&comments.items[1],&self));
+    assert(!JiraCommentIsOwn(&comments.items[2],&self));
+    assert(!JiraCommentIsOwn(&comments.items[3],&self));
+    wcscpy_s(self.identity.account_id,256,L"cloud-1");
+    assert(JiraCommentIsOwn(&comments.items[3],&self));
+    wcscpy_s(comments.items[3].identity.key,256,L"user-1");
+    wcscpy_s(self.identity.account_id,256,L"cloud-2");
+    assert(!JiraCommentIsOwn(&comments.items[3],&self)); /* Stable ID wins over a weaker match. */
+    memset(&self.identity,0,sizeof(self.identity));wcscpy_s(self.identity.name,256,L"alex");
+    assert(JiraCommentIsOwn(&comments.items[0],&self));
+    assert(!JiraCommentIsOwn(&comments.items[1],&self));
+    assert(!JiraCommentIsOwn(NULL,&self)&&!JiraCommentIsOwn(&comments.items[0],NULL));
+    JiraFreeComments(&comments);
     puts("Jira model tests passed");
 }

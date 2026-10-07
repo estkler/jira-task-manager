@@ -11,7 +11,8 @@ typedef struct JiraItem {
     wchar_t latest_comment_id[80],latest_comment_author[256];
     BOOL assigned_to_me,reported_by_me;
 } JiraItem;
-typedef struct JiraSnapshot { JiraItem *items; int count; wchar_t account[256]; } JiraSnapshot;
+typedef struct JiraUserIdentity { wchar_t account_id[256],key[256],name[256]; } JiraUserIdentity;
+typedef struct JiraSnapshot { JiraItem *items; int count; wchar_t account[256]; JiraUserIdentity identity; } JiraSnapshot;
 typedef struct JiraRatingOption { wchar_t id[80], value[64]; } JiraRatingOption;
 typedef struct JiraTransitionItem {
     wchar_t id[80], name[128], status_name[128], category[32], rating_field_id[80];
@@ -20,6 +21,7 @@ typedef struct JiraTransitionItem {
 typedef struct JiraTransitions { JiraTransitionItem items[JIRA_MAX_TRANSITIONS]; int count; } JiraTransitions;
 typedef struct JiraComment {
     wchar_t id[80], author[256], created[64], body[2048];
+    JiraUserIdentity identity;
 } JiraComment;
 typedef struct JiraComments { JiraComment *items; int count; } JiraComments;
 typedef struct JiraConnection {
@@ -46,6 +48,7 @@ BOOL JiraLoadWithReporter(JiraConnection *client,JiraSnapshot *snapshot,BOOL inc
 BOOL JiraMergeReported(JiraSnapshot *assigned,const JiraSnapshot *reported);
 BOOL JiraReadTransitions(JiraConnection *client,const wchar_t *key,JiraTransitions *transitions);
 BOOL JiraReadComments(JiraConnection *client,const wchar_t *key,JiraComments *comments);
+BOOL JiraCommentIsOwn(const JiraComment *comment,const JiraSnapshot *snapshot);
 BOOL JiraPostComment(JiraConnection *client,const wchar_t *key,const wchar_t *comment);
 void JiraFreeComments(JiraComments *comments);
 BOOL JiraPostTransition(JiraConnection *client,const wchar_t *key,const wchar_t *transition_id);

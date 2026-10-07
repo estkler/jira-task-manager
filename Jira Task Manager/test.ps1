@@ -15,7 +15,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Old fixture resource compilation failed.' }
     & $compiler cc -municode 'update_test_fixture.c' 'native_update_model.c' 'native_update_files.c' 'native_update_apply.c' 'bin/update_test_old.res' -o 'bin/update_test_old.exe' '-Wl,--subsystem,windows' -lwinhttp -lshlwapi -lshell32 -ladvapi32 -lbcrypt
     if ($LASTEXITCODE -ne 0) { throw 'Old fixture compilation failed.' }
-    foreach ($testName in @('update_model_test','update_http_test','update_files_test','update_apply_test','native_json_test','time_input_test','workday_clock_test','identity_migration_test','lifecycle_log_test','notes_test','new_tasks_test','jira_model_test','jira_operations_test','status_color_test','density_test','flash_test','settings_test')) {
+    foreach ($testName in @('update_model_test','update_http_test','update_files_test','update_apply_test','native_json_test','time_input_test','workday_clock_test','identity_migration_test','lifecycle_log_test','notes_test','new_tasks_test','jira_model_test','jira_operations_test','status_color_test','density_test','flash_test','settings_test','comment_style_test','scope_icon_test')) {
         $sources = @("$testName.c")
         if ($testName -eq 'update_model_test') { $sources += 'native_update_model.c' }
         elseif ($testName -eq 'update_http_test') { $sources += 'native_update_model.c','native_update_http.c' }
@@ -28,10 +28,11 @@ try {
         elseif ($testName -notin @('native_json_test','time_input_test','workday_clock_test')) {
             $sources += 'native_jira.c','native_notes.c','native_new_tasks.c','native_identity.c'
         }
-        if ($testName -in @('status_color_test','density_test','flash_test','settings_test')) {
-            $sources += 'native_lifecycle.c','native_update_model.c','native_update_files.c','native_update_apply.c'
+        if ($testName -in @('status_color_test','density_test','flash_test','settings_test','comment_style_test','scope_icon_test')) {
+            $sources += 'native_lifecycle.c','native_update_model.c','native_update_http.c','native_update_files.c','native_update_apply.c'
         }
         $unicodeEntry = @()
+        if ($testName -eq 'settings_test') { $sources += 'bin/update_test_old.res' }
         if ($testName -in @('update_files_test','update_apply_test')) { $unicodeEntry += '-municode' }
         & $compiler cc -DUNICODE -D_UNICODE @unicodeEntry @sources -o "bin/$testName.exe" -lcomctl32 -ldwmapi -lgdi32 -lshell32 -lshlwapi -luxtheme -lwinhttp -ladvapi32 -lcrypt32 -lbcrypt -lwtsapi32 -lole32 -luuid
         if ($LASTEXITCODE -ne 0) { throw "Build failed: $testName" }
