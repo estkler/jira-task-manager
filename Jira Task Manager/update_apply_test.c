@@ -1,12 +1,14 @@
 /* Breaks caught: replacing without identity/version checks, losing old bytes on
    rename failure, updating while the exact parent is alive, missing restart. */
 #include "native_update.h"
+#include "native_update_apply.h"
 #include <assert.h>
 #include <stdio.h>
 #include <wchar.h>
 #include <winioctl.h>
 static UpdateRelease old_release,new_release;
 static const wchar_t *old_fixture,*new_fixture;
+static int fault_mode;
 static void hash(const wchar_t *s,BYTE *out){for(int i=0;i<32;i++){unsigned n;assert(swscanf(s+2*i,L"%2x",&n)==1);out[i]=(BYTE)n;}}
 static void verify(const wchar_t *path,const UpdateRelease *r){HANDLE f=CreateFileW(path,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_DELETE,NULL,OPEN_EXISTING,0,NULL);assert(f!=INVALID_HANDLE_VALUE);assert(UpdateVerifyFile(f,r)==UPDATE_OK);CloseHandle(f);}
 static void cleanup(UpdateStage *s){
@@ -18,19 +20,36 @@ static void integration(BOOL rollback,BOOL timeout,BOOL locked,int collision,BOO
     UpdateStage source,target;assert(UpdateStageCreate(&source)==UPDATE_OK);assert(UpdateStageCreate(&target)==UPDATE_OK);
     assert(CopyFileW(new_fixture,source.executable,TRUE));wchar_t installed[MAX_PATH];swprintf(installed,MAX_PATH,L"%ls\\Задача менеджер.exe",target.directory);assert(CopyFileW(same_version?new_fixture:old_fixture,installed,TRUE));
     wchar_t foreign[MAX_PATH]={0};if(collision){swprintf(foreign,MAX_PATH,L"%ls\\Jira-update-00000000000000000000000000000000.%ls.exe",target.directory,collision==1?L"candidate":L"backup");HANDLE f=CreateFileW(foreign,GENERIC_WRITE,0,NULL,CREATE_NEW,0,NULL);assert(f!=INVALID_HANDLE_VALUE);DWORD written;assert(WriteFile(f,"sentinel",8,&written,NULL)&&written==8);CloseHandle(f);}
-    SetEnvironmentVariableW(L"JTM_FIXTURE_FAIL_RENAME",rollback?L"1":NULL);SetEnvironmentVariableW(L"JTM_FIXTURE_SHORT_WAIT",timeout?L"1":NULL);
+    SetEnvironmentVariableW(L"JTM_FIXTURE_FAIL_RENAME",rollback||fault_mode==2?L"1":NULL);SetEnvironmentVariableW(L"JTM_FIXTURE_SHORT_WAIT",timeout?L"1":NULL);
     SetEnvironmentVariableW(L"JTM_FIXTURE_FIXED_NONCE",collision?L"1":NULL);SetEnvironmentVariableW(L"JTM_FIXTURE_FAIL_START",restart_failed?L"1":NULL);
+    SetEnvironmentVariableW(L"JTM_FIXTURE_FAIL_COPY",fault_mode==1?L"1":NULL);SetEnvironmentVariableW(L"JTM_FIXTURE_FAIL_ROLLBACK",fault_mode==2?L"1":NULL);
     HANDLE lock=locked?CreateFileW(installed,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL):INVALID_HANDLE_VALUE;
     wchar_t command[2048];swprintf(command,_countof(command),L"\"%ls\" --fixture-parent \"%ls\" %u",installed,source.executable,timeout?750:0);
     STARTUPINFOW si={sizeof(si)};PROCESS_INFORMATION pi;assert(CreateProcessW(installed,command,NULL,NULL,FALSE,CREATE_NO_WINDOW,NULL,target.directory,&si,&pi));CloseHandle(pi.hThread);
     SetEnvironmentVariableW(L"JTM_FIXTURE_FAIL_RENAME",NULL);SetEnvironmentVariableW(L"JTM_FIXTURE_SHORT_WAIT",NULL);
     SetEnvironmentVariableW(L"JTM_FIXTURE_FIXED_NONCE",NULL);SetEnvironmentVariableW(L"JTM_FIXTURE_FAIL_START",NULL);
+    SetEnvironmentVariableW(L"JTM_FIXTURE_FAIL_COPY",NULL);SetEnvironmentVariableW(L"JTM_FIXTURE_FAIL_ROLLBACK",NULL);
     assert(WaitForSingleObject(pi.hProcess,10000)==WAIT_OBJECT_0);CloseHandle(pi.hProcess);if(lock!=INVALID_HANDLE_VALUE)CloseHandle(lock);
     wchar_t log_pattern[MAX_PATH];swprintf(log_pattern,MAX_PATH,L"%ls\\Jira-update-*.log",target.directory);
     WIN32_FIND_DATAW data;BOOL logged=FALSE;for(int i=0;i<100;i++){HANDLE f=FindFirstFileW(log_pattern,&data);if(f!=INVALID_HANDLE_VALUE){FindClose(f);logged=TRUE;break;}Sleep(50);}assert(logged);
-    verify(installed,same_version?&new_release:rollback||timeout||locked||collision||restart_failed?&old_release:&new_release);
+    if(fault_mode!=2)verify(installed,same_version?&new_release:rollback||timeout||locked||collision||restart_failed||fault_mode?&old_release:&new_release);
+    if(rollback||collision||restart_failed||fault_mode){
+        wchar_t report_path[MAX_PATH];swprintf(report_path,MAX_PATH,L"%ls\\failure-report.txt",target.directory);
+        HANDLE report=CreateFileW(report_path,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);
+        assert(report!=INVALID_HANDLE_VALUE);UpdateApplyFailure failure={0};wchar_t text[2048]={0};DWORD got;
+        assert(ReadFile(report,&failure,sizeof(failure),&got,NULL)&&got==sizeof(failure));assert(ReadFile(report,text,sizeof(text),&got,NULL)&&got>=2&&got<=sizeof(text)&&text[got/2-1]==0);CloseHandle(report);
+        assert(failure.phase==(fault_mode==1?UPDATE_APPLY_COPY:collision==1?UPDATE_APPLY_CREATE:collision==2?UPDATE_APPLY_BACKUP:restart_failed?UPDATE_APPLY_START:UPDATE_APPLY_REPLACE));
+        assert(failure.windows_error!=0&&!wcscmp(failure.target,installed)&&wcsstr(text,installed));
+        if(!collision)assert(failure.windows_error==ERROR_ACCESS_DENIED);
+        assert(failure.original_available==(fault_mode!=2));
+        if(fault_mode==2){assert(failure.rollback_error==ERROR_ACCESS_DENIED&&failure.backup[0]&&wcsstr(text,failure.backup));verify(failure.backup,&old_release);assert(GetFileAttributesW(installed)==INVALID_FILE_ATTRIBUTES);}
+        else assert(!failure.backup[0]&&!failure.rollback_error);
+        for(int ru=0;ru<2;ru++){wchar_t formatted[2048];assert(UpdateFormatApplyFailure(&failure,ru,formatted,_countof(formatted)));assert(wcsstr(formatted,installed)&&wcsstr(formatted,L"Windows"));if(failure.backup[0])assert(wcsstr(formatted,failure.backup));}
+    }else{
+        wchar_t report_path[MAX_PATH];swprintf(report_path,MAX_PATH,L"%ls\\failure-report.txt",target.directory);assert(GetFileAttributesW(report_path)==INVALID_FILE_ATTRIBUTES);
+    }
     if(collision){HANDLE f=CreateFileW(foreign,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);assert(f!=INVALID_HANDLE_VALUE);char bytes[9]={0};DWORD got;assert(ReadFile(f,bytes,8,&got,NULL)&&got==8&&!memcmp(bytes,"sentinel",8));CloseHandle(f);}
-    if(!rollback&&!timeout&&!locked&&!collision&&!restart_failed&&!same_version){
+    if(!rollback&&!timeout&&!locked&&!collision&&!restart_failed&&!same_version&&!fault_mode){
         wchar_t pattern[MAX_PATH],backup[MAX_PATH],marker[MAX_PATH];swprintf(pattern,MAX_PATH,L"%ls\\Jira-update-*.backup.exe",target.directory);
         HANDLE f=FindFirstFileW(pattern,&data);assert(f!=INVALID_HANDLE_VALUE);swprintf(backup,MAX_PATH,L"%ls\\%ls",target.directory,data.cFileName);verify(backup,&old_release);assert(!FindNextFileW(f,&data));FindClose(f);
         swprintf(marker,MAX_PATH,L"%ls\\started-30",target.directory);BOOL started=FALSE;for(int i=0;i<100;i++){if(GetFileAttributesW(marker)!=INVALID_FILE_ATTRIBUTES){started=TRUE;break;}Sleep(50);}assert(started);
@@ -57,5 +76,6 @@ static void test_apply_timeout(void){integration(FALSE,TRUE,FALSE,0,FALSE,FALSE)
 int wmain(int argc,wchar_t **argv){
     assert(argc==7);old_fixture=argv[1];new_fixture=argv[2];old_release.version=(UpdateVersion){0,9,29};new_release.version=(UpdateVersion){0,9,30};old_release.size=wcstoul(argv[5],NULL,10);new_release.size=wcstoul(argv[6],NULL,10);hash(argv[3],old_release.sha256);hash(argv[4],new_release.sha256);
     test_apply_identity();test_apply_success();test_apply_rollback();test_apply_timeout();integration(FALSE,FALSE,TRUE,0,FALSE,FALSE);integration(FALSE,FALSE,FALSE,1,FALSE,FALSE);integration(FALSE,FALSE,FALSE,2,FALSE,FALSE);integration(FALSE,FALSE,FALSE,0,FALSE,TRUE);
+    fault_mode=1;integration(FALSE,FALSE,FALSE,0,FALSE,FALSE);fault_mode=2;integration(FALSE,FALSE,FALSE,0,FALSE,FALSE);fault_mode=0;
     puts("Update apply identity, success, rollback, timeout and locked-target tests passed");return 0;
 }

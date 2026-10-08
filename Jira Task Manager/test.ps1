@@ -18,7 +18,7 @@ try {
     foreach ($testName in @('update_model_test','update_http_test','update_files_test','update_apply_test','native_json_test','time_input_test','workday_clock_test','identity_migration_test','lifecycle_log_test','notes_test','new_tasks_test','jira_model_test','jira_operations_test','status_color_test','density_test','flash_test','settings_test','comment_style_test','scope_icon_test')) {
         $sources = @("$testName.c")
         if ($testName -eq 'update_model_test') { $sources += 'native_update_model.c' }
-        elseif ($testName -eq 'update_http_test') { $sources += 'native_update_model.c','native_update_http.c' }
+        elseif ($testName -eq 'update_http_test') { $sources += 'native_update_model.c' }
         elseif ($testName -eq 'update_files_test') { $sources += 'native_update_model.c','native_update_files.c' }
         elseif ($testName -eq 'update_apply_test') { $sources += 'native_update_model.c','native_update_files.c','native_update_apply.c' }
         elseif ($testName -eq 'identity_migration_test') { $sources += 'native_identity.c' }

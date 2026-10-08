@@ -103,9 +103,28 @@ static void result_log(const wchar_t *directory,const wchar_t *random,UpdateStat
     HANDLE f=CreateFileW(path,GENERIC_WRITE,0,NULL,CREATE_NEW,FILE_ATTRIBUTE_NORMAL|FILE_FLAG_OPEN_REPARSE_POINT,NULL);if(f==INVALID_HANDLE_VALUE)return;
     char text[80];int count=snprintf(text,sizeof(text),"Native update result: %u\r\n",(unsigned)status);DWORD written;WriteFile(f,text,count,&written,NULL);FlushFileBuffers(f);CloseHandle(f);
 }
+BOOL UpdateFormatApplyFailure(const UpdateApplyFailure *f,BOOL ru,wchar_t *text,size_t capacity){
+    if(!f||!text||!capacity||f->phase<UPDATE_APPLY_CHECK_TARGET||f->phase>UPDATE_APPLY_START)return FALSE;
+    static const wchar_t *en[]={L"Check installed executable",L"Create new executable",L"Copy new executable",L"Verify new executable",L"Preserve previous version",L"Replace executable",L"Start updated application"};
+    static const wchar_t *russian[]={L"Проверка установленного приложения",L"Создание нового файла",L"Копирование нового файла",L"Проверка нового файла",L"Сохранение предыдущей версии",L"Замена приложения",L"Запуск обновлённого приложения"};
+    wchar_t detail[512]={0},recovery[1100];
+    FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_IGNORE_INSERTS,NULL,f->windows_error,0,detail,_countof(detail),NULL);
+    if(f->original_available){
+        if(swprintf(recovery,_countof(recovery),ru?L"Предыдущая версия сохранена по адресу:\n%ls\n\nОткройте её вручную. Обновление можно повторить позже.":L"The previous version is available at:\n%ls\n\nOpen it manually. You can retry the update later.",f->target)<0)return FALSE;
+    }else if(f->backup[0]){
+        if(swprintf(recovery,_countof(recovery),ru?L"Автоматическое восстановление не завершено (ошибка Windows: %lu).\nПредыдущая версия сохранена в резервной копии:\n%ls\n\nВосстановите этот файл по адресу:\n%ls\nНе удаляйте резервную копию.":L"Automatic recovery did not complete (Windows error: %lu).\nThe previous version is preserved in this backup:\n%ls\n\nRestore this file to:\n%ls\nDo not delete the backup.",f->rollback_error,f->backup,f->target)<0)return FALSE;
+    }else if(swprintf(recovery,_countof(recovery),ru?L"Установленный файл не был изменён обновлением.\nПроверьте приложение по адресу:\n%ls":L"The updater did not change the installed file.\nCheck the application at:\n%ls",f->target)<0)return FALSE;
+    return swprintf(text,capacity,ru?L"Не удалось обновить Jira Task Manager.\n\nОперация: %ls\nОшибка Windows: %lu\n%ls\n%ls":L"Could not update Jira Task Manager.\n\nOperation: %ls\nWindows error: %lu\n%ls\n%ls",ru?russian[f->phase]:en[f->phase],f->windows_error,detail,recovery)>=0;
+}
+static void report_failure(const UpdateApplyFailure *failure){
+    wchar_t text[2048];BOOL ru=PRIMARYLANGID(GetUserDefaultUILanguage())==LANG_RUSSIAN;
+    if(!UpdateFormatApplyFailure(failure,ru,text,_countof(text)))wcscpy_s(text,_countof(text),L"Jira Task Manager update failed. Keep the installation backup and try again later.");
+    MessageBoxW(NULL,text,L"Jira Task Manager",MB_OK|MB_ICONERROR|MB_SETFOREGROUND);
+}
 int UpdateRunHelperUsing(int argc,wchar_t **argv,const UpdateApplyOps *ops){
     UpdateStatus result=UPDATE_INVALID;UpdateApplyRequest r={0};ULONGLONG n;wchar_t source[MAX_PATH],source_dir[MAX_PATH],target_dir[MAX_PATH],random[33]={0},candidate[MAX_PATH]={0},backup[MAX_PATH]={0};
-    HANDLE source_lock=INVALID_HANDLE_VALUE,target_lock=INVALID_HANDLE_VALUE,file=INVALID_HANDLE_VALUE,old=INVALID_HANDLE_VALUE,parent=NULL,event=NULL,new_file=INVALID_HANDLE_VALUE;BOOL backed_up=FALSE,installed=FALSE,candidate_owned=FALSE;
+    HANDLE source_lock=INVALID_HANDLE_VALUE,target_lock=INVALID_HANDLE_VALUE,file=INVALID_HANDLE_VALUE,old=INVALID_HANDLE_VALUE,parent=NULL,event=NULL,new_file=INVALID_HANDLE_VALUE;BOOL backed_up=FALSE,installed=FALSE,candidate_owned=FALSE,parent_exited=FALSE;
+    UpdateApplyFailure failure={.phase=UPDATE_APPLY_CHECK_TARGET,.windows_error=ERROR_INVALID_DATA};
     if(argc!=9||!argv||wcscmp(argv[1],L"--apply-update")||!number(argv[2],MAXDWORD,&n)||!n)return result;r.parent_pid=(DWORD)n;
     if(!number(argv[3],~(ULONGLONG)0,&r.parent_created)||!r.parent_created||wcslen(argv[4])>=MAX_PATH||!dirname(argv[4],target_dir))return result;
     wcscpy_s(r.target,MAX_PATH,argv[4]);if(!UpdateParseVersion(argv[5],&r.release.version)||!number(argv[6],UPDATE_EXE_LIMIT,&n)||!n||!digest(argv[7],r.release.sha256))return result;r.release.size=(DWORD)n;
@@ -124,34 +143,51 @@ int UpdateRunHelperUsing(int argc,wchar_t **argv,const UpdateApplyOps *ops){
     if(UpdateInspectFile(old,&old_release)!=UPDATE_OK||UpdateCompareVersion(r.release.version,old_release.version)<=0||same_file(file,old)||!GetFileInformationByHandle(old,&old_info)||old_info.nNumberOfLinks!=1)goto done;
     event=OpenEventW(EVENT_MODIFY_STATE,FALSE,argv[8]);if(!event||!SetEvent(event))goto done;
     if(WaitForSingleObject(parent,ops?ops->parent_timeout_ms:60000)!=WAIT_OBJECT_0){result=UPDATE_BUSY;goto done;}
+    parent_exited=TRUE;wcscpy_s(failure.target,MAX_PATH,r.target);
     HANDLE check=CreateFileW(r.target,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_DELETE,NULL,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,NULL);
     BOOL unchanged=check!=INVALID_HANDLE_VALUE&&same_file(old,check)&&UpdatePathSafe(r.target,FALSE)&&UpdatePathSafe(target_dir,TRUE);if(check!=INVALID_HANDLE_VALUE)CloseHandle(check);if(!unchanged)goto done;
+    failure.original_available=TRUE;failure.phase=UPDATE_APPLY_CREATE;
     if(swprintf(candidate,MAX_PATH,L"%ls\\Jira-update-%ls.candidate.exe",target_dir,random)<0||swprintf(backup,MAX_PATH,L"%ls\\Jira-update-%ls.backup.exe",target_dir,random)<0){result=UPDATE_IO;goto done;}
-    new_file=CreateFileW(candidate,GENERIC_READ|GENERIC_WRITE|DELETE,FILE_SHARE_READ|FILE_SHARE_DELETE,NULL,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,NULL);if(new_file==INVALID_HANDLE_VALUE){result=UPDATE_IO;goto done;}
+    new_file=CreateFileW(candidate,GENERIC_READ|GENERIC_WRITE|DELETE,FILE_SHARE_READ|FILE_SHARE_DELETE,NULL,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,NULL);if(new_file==INVALID_HANDLE_VALUE){failure.windows_error=GetLastError();result=UPDATE_IO;goto done;}
     candidate_owned=TRUE;
-    if(!copy_locked(file,new_file)||UpdateVerifyFile(new_file,&r.release)!=UPDATE_OK){result=UPDATE_IO;goto done;}
+    failure.phase=UPDATE_APPLY_COPY;
+    if(!(ops&&ops->copy?ops->copy(file,new_file):copy_locked(file,new_file))){failure.windows_error=GetLastError();result=UPDATE_IO;goto done;}
+    failure.phase=UPDATE_APPLY_VERIFY;
+    if(UpdateVerifyFile(new_file,&r.release)!=UPDATE_OK){failure.windows_error=ERROR_INVALID_DATA;result=UPDATE_INVALID;goto done;}
     /* Drop this handle's write access before launching: the read-only handle
        below denies any other writer while allowing our exact renames. */
     CloseHandle(new_file);new_file=CreateFileW(candidate,GENERIC_READ|DELETE,FILE_SHARE_READ|FILE_SHARE_DELETE,NULL,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,NULL);
-    if(new_file==INVALID_HANDLE_VALUE||UpdateVerifyFile(new_file,&r.release)!=UPDATE_OK){result=UPDATE_INVALID;goto done;}
+    if(new_file==INVALID_HANDLE_VALUE){failure.windows_error=GetLastError();result=UPDATE_IO;goto done;}
+    if(UpdateVerifyFile(new_file,&r.release)!=UPDATE_OK){failure.windows_error=ERROR_INVALID_DATA;result=UPDATE_INVALID;goto done;}
     BOOL (*start)(const wchar_t*,const wchar_t*)=ops&&ops->start?ops->start:start_default;
-    if(!handle_path_equals(old,r.target)||!move_file(ops,old,r.target,backup)){result=UPDATE_IO;goto done;}backed_up=TRUE;
-    if(!move_file(ops,new_file,candidate,r.target)){result=UPDATE_IO;goto restore;}installed=TRUE;
+    failure.phase=UPDATE_APPLY_BACKUP;
+    if(!handle_path_equals(old,r.target)){failure.windows_error=ERROR_INVALID_DATA;result=UPDATE_INVALID;goto done;}
+    if(!move_file(ops,old,r.target,backup)){failure.windows_error=GetLastError();result=UPDATE_IO;goto done;}backed_up=TRUE;failure.original_available=FALSE;
+    failure.phase=UPDATE_APPLY_REPLACE;
+    if(!move_file(ops,new_file,candidate,r.target)){failure.windows_error=GetLastError();result=UPDATE_IO;goto restore;}installed=TRUE;
     CloseHandle(new_file);new_file=CreateFileW(r.target,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,NULL);
-    if(new_file==INVALID_HANDLE_VALUE||!UpdatePathSafe(r.target,FALSE)||UpdateVerifyFile(new_file,&r.release)!=UPDATE_OK||!start(r.target,target_dir)){result=UPDATE_IO;goto restore;}
+    failure.phase=UPDATE_APPLY_VERIFY;
+    if(new_file==INVALID_HANDLE_VALUE){failure.windows_error=GetLastError();result=UPDATE_IO;goto restore;}
+    if(!UpdatePathSafe(r.target,FALSE)||UpdateVerifyFile(new_file,&r.release)!=UPDATE_OK){failure.windows_error=ERROR_INVALID_DATA;result=UPDATE_INVALID;goto restore;}
+    failure.phase=UPDATE_APPLY_START;
+    if(!start(r.target,target_dir)){failure.windows_error=GetLastError();result=UPDATE_IO;goto restore;}
     result=UPDATE_OK;goto done;
 restore:
     if(installed){
         if(new_file!=INVALID_HANDLE_VALUE)CloseHandle(new_file);
         new_file=CreateFileW(r.target,GENERIC_READ|DELETE,FILE_SHARE_READ|FILE_SHARE_DELETE,NULL,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,NULL);
-        if(new_file==INVALID_HANDLE_VALUE||UpdateVerifyFile(new_file,&r.release)!=UPDATE_OK||!move_file(ops,new_file,r.target,candidate))goto done;
+        if(new_file==INVALID_HANDLE_VALUE){failure.rollback_error=GetLastError();goto done;}
+        if(UpdateVerifyFile(new_file,&r.release)!=UPDATE_OK){failure.rollback_error=ERROR_INVALID_DATA;goto done;}
+        if(!move_file(ops,new_file,r.target,candidate)){failure.rollback_error=GetLastError();goto done;}
     }
-    if(move_file(ops,old,backup,r.target)){backed_up=FALSE;installed=FALSE;}
+    if(move_file(ops,old,backup,r.target)){backed_up=FALSE;installed=FALSE;failure.original_available=TRUE;}else failure.rollback_error=GetLastError();
 done:
     if(candidate_owned&&new_file!=INVALID_HANDLE_VALUE&&handle_path_equals(new_file,candidate)){FILE_DISPOSITION_INFO disposition={TRUE};SetFileInformationByHandle(new_file,FileDispositionInfo,&disposition,sizeof(disposition));}
     if(new_file!=INVALID_HANDLE_VALUE)CloseHandle(new_file);if(old!=INVALID_HANDLE_VALUE)CloseHandle(old);if(file!=INVALID_HANDLE_VALUE)CloseHandle(file);
     /* Backup is never deleted. If restoration fails it remains recoverable. */
-    (void)backed_up;if(random[0])result_log(target_dir,random,result);
-    if(event)CloseHandle(event);if(parent)CloseHandle(parent);if(source_lock!=INVALID_HANDLE_VALUE)CloseHandle(source_lock);if(target_lock!=INVALID_HANDLE_VALUE)CloseHandle(target_lock);return result;
+    if(backed_up)wcscpy_s(failure.backup,MAX_PATH,backup);
+    if(event)CloseHandle(event);if(parent)CloseHandle(parent);if(source_lock!=INVALID_HANDLE_VALUE)CloseHandle(source_lock);if(target_lock!=INVALID_HANDLE_VALUE)CloseHandle(target_lock);
+    if(parent_exited&&result!=UPDATE_OK){if(!failure.windows_error)failure.windows_error=ERROR_GEN_FAILURE;(ops&&ops->report?ops->report:report_failure)(&failure);}
+    if(random[0])result_log(target_dir,random,result);return result;
 }
 int UpdateRunHelper(int argc,wchar_t **argv){return UpdateRunHelperUsing(argc,argv,NULL);}

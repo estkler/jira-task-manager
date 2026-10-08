@@ -6,25 +6,64 @@
 #include <stdio.h>
 #include <string.h>
 
-typedef struct WinRequest {HINTERNET session,connection,request;ULONGLONG deadline;} WinRequest;
+typedef struct WinRequest {
+    HINTERNET session,connection,request;ULONGLONG deadline;UpdateCancel *cancel;
+    HANDLE completed;volatile LONG refs,phase;DWORD bytes;BYTE buffer[16384];wchar_t headers[256];
+} WinRequest;
 static BOOL cancelled(UpdateCancel *c){return c&&InterlockedCompareExchange(&c->cancelled,0,0)!=0;}
-static void win_close(void *value){WinRequest *r=value;if(!r)return;if(r->request)WinHttpCloseHandle(r->request);if(r->connection)WinHttpCloseHandle(r->connection);if(r->session)WinHttpCloseHandle(r->session);free(r);}
-static UpdateStatus win_open(void *context,const wchar_t *url,const wchar_t *accept,ULONGLONG deadline,UpdateHttpResponse *out){
-    (void)context;wchar_t host[256],path[8193],extra[8193],target[8193],headers[256];
+static void win_release(WinRequest *r){if(!InterlockedDecrement(&r->refs)){if(r->completed)CloseHandle(r->completed);free(r);}}
+static void CALLBACK win_status(HINTERNET handle,DWORD_PTR context,DWORD status,LPVOID info,DWORD length){
+    (void)handle;(void)info;WinRequest *r=(WinRequest*)context;if(!r)return;
+    /* HANDLE_CLOSING is the final callback: pending read buffers and context
+       must survive cancellation until this notification (WinHTTP contract). */
+    if(status==WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING){win_release(r);return;}
+    if(status==WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE||status==WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE||
+       status==WINHTTP_CALLBACK_STATUS_READ_COMPLETE||status==WINHTTP_CALLBACK_STATUS_REQUEST_ERROR){
+        r->bytes=length;InterlockedExchange(&r->phase,(LONG)status);SetEvent(r->completed);
+    }
+}
+static void win_close(void *value){WinRequest *r=value;if(!r)return;if(r->request)WinHttpCloseHandle(r->request);if(r->connection)WinHttpCloseHandle(r->connection);if(r->session)WinHttpCloseHandle(r->session);win_release(r);}
+static UpdateStatus win_state(WinRequest *r){return cancelled(r->cancel)?UPDATE_CANCELLED:GetTickCount64()>=r->deadline?UPDATE_NETWORK:UPDATE_OK;}
+static UpdateStatus win_prepare(WinRequest *r){
+    UpdateStatus state=win_state(r);if(state!=UPDATE_OK)return state;ULONGLONG now=GetTickCount64();if(now>=r->deadline)return UPDATE_NETWORK;
+    int short_timeout=(int)min(10000ull,r->deadline-now),timeout=(int)min(15000ull,r->deadline-now);
+    if(!WinHttpSetTimeouts(r->request,short_timeout,short_timeout,timeout,timeout))return UPDATE_NETWORK;
+    ResetEvent(r->completed);InterlockedExchange(&r->phase,0);return win_state(r);
+}
+static UpdateStatus win_wait(WinRequest *r,BOOL started,DWORD expected){
+    if(!started&&GetLastError()!=ERROR_IO_PENDING)return cancelled(r->cancel)?UPDATE_CANCELLED:UPDATE_NETWORK;
+    for(;;){
+        UpdateStatus state=win_state(r);if(state!=UPDATE_OK)return state;
+        LONG phase=InterlockedCompareExchange(&r->phase,0,0);if(phase)return phase==(LONG)expected?UPDATE_OK:UPDATE_NETWORK;
+        ULONGLONG now=GetTickCount64();if(now>=r->deadline)return UPDATE_NETWORK;
+        DWORD wait=WaitForSingleObject(r->completed,(DWORD)min(50ull,r->deadline-now));if(wait!=WAIT_OBJECT_0&&wait!=WAIT_TIMEOUT)return UPDATE_NETWORK;
+    }
+}
+static UpdateStatus win_open(void *context,const wchar_t *url,const wchar_t *accept,ULONGLONG deadline,UpdateCancel *cancel,UpdateHttpResponse *out){
+    (void)context;wchar_t host[256],path[8193],extra[8193],target[8193];
     URL_COMPONENTS parts={sizeof(parts)};parts.lpszHostName=host;parts.dwHostNameLength=_countof(host);parts.lpszUrlPath=path;parts.dwUrlPathLength=_countof(path);parts.lpszExtraInfo=extra;parts.dwExtraInfoLength=_countof(extra);
     if(!WinHttpCrackUrl(url,0,0,&parts)||parts.dwHostNameLength>=_countof(host)||parts.dwUrlPathLength>=_countof(path)||parts.dwExtraInfoLength>=_countof(extra))return UPDATE_INVALID;
     host[parts.dwHostNameLength]=path[parts.dwUrlPathLength]=extra[parts.dwExtraInfoLength]=0;
-    if(swprintf(target,_countof(target),L"%ls%ls",path[0]?path:L"/",extra)<0||
-       swprintf(headers,_countof(headers),L"Accept: %ls\r\nX-GitHub-Api-Version: 2022-11-28\r\n",accept)<0)return UPDATE_INVALID;
-    WinRequest *r=calloc(1,sizeof(*r));if(!r)return UPDATE_IO;r->deadline=deadline;
-    r->session=WinHttpOpen(L"Jira-Task-Manager-Updates",WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0);
+    if(swprintf(target,_countof(target),L"%ls%ls",path[0]?path:L"/",extra)<0)return UPDATE_INVALID;
+    WinRequest *r=calloc(1,sizeof(*r));if(!r)return UPDATE_IO;r->deadline=deadline;r->cancel=cancel;r->refs=1;UpdateStatus result=UPDATE_NETWORK;
+    if(swprintf(r->headers,_countof(r->headers),L"Accept: %ls\r\nX-GitHub-Api-Version: 2022-11-28\r\n",accept)<0){win_close(r);return UPDATE_INVALID;}
+    r->completed=CreateEventW(NULL,TRUE,FALSE,NULL);if(!r->completed)goto fail;
+    if((result=win_state(r))!=UPDATE_OK)goto fail;
+    r->session=WinHttpOpen(L"Jira-Task-Manager-Updates",WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,WINHTTP_FLAG_ASYNC);
     if(!r->session)goto fail;
     if(!WinHttpSetTimeouts(r->session,10000,10000,15000,15000))goto fail;
     r->connection=WinHttpConnect(r->session,host,443,0);if(!r->connection)goto fail;
     r->request=WinHttpOpenRequest(r->connection,L"GET",target,NULL,WINHTTP_NO_REFERER,WINHTTP_DEFAULT_ACCEPT_TYPES,WINHTTP_FLAG_SECURE);if(!r->request)goto fail;
+    DWORD_PTR callback_context=(DWORD_PTR)r;
+    if(!WinHttpSetOption(r->request,WINHTTP_OPTION_CONTEXT_VALUE,&callback_context,sizeof(callback_context))||
+       WinHttpSetStatusCallback(r->request,win_status,WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS|WINHTTP_CALLBACK_FLAG_HANDLES,0)==WINHTTP_INVALID_STATUS_CALLBACK)goto fail;
+    InterlockedIncrement(&r->refs);
     DWORD disable=WINHTTP_DISABLE_REDIRECTS|WINHTTP_DISABLE_COOKIES|WINHTTP_DISABLE_AUTHENTICATION;
-    if(!WinHttpSetOption(r->request,WINHTTP_OPTION_DISABLE_FEATURE,&disable,sizeof(disable))||
-       !WinHttpSendRequest(r->request,headers,(DWORD)-1,WINHTTP_NO_REQUEST_DATA,0,0,0)||!WinHttpReceiveResponse(r->request,NULL))goto fail;
+    if(!WinHttpSetOption(r->request,WINHTTP_OPTION_DISABLE_FEATURE,&disable,sizeof(disable)))goto fail;
+    if((result=win_prepare(r))!=UPDATE_OK)goto fail;
+    if((result=win_wait(r,WinHttpSendRequest(r->request,r->headers,(DWORD)-1,WINHTTP_NO_REQUEST_DATA,0,0,(DWORD_PTR)r),WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE))!=UPDATE_OK)goto fail;
+    if((result=win_prepare(r))!=UPDATE_OK)goto fail;
+    if((result=win_wait(r,WinHttpReceiveResponse(r->request,NULL),WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE))!=UPDATE_OK)goto fail;
     DWORD size=sizeof(out->status);if(!WinHttpQueryHeaders(r->request,WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,NULL,&out->status,&size,NULL))goto fail;
     if(out->status>=300&&out->status<400){size=sizeof(out->location);if(!WinHttpQueryHeaders(r->request,WINHTTP_QUERY_LOCATION,NULL,out->location,&size,NULL))goto fail;}
     wchar_t length[32];size=sizeof(length);
@@ -33,15 +72,14 @@ static UpdateStatus win_open(void *context,const wchar_t *url,const wchar_t *acc
         for(const wchar_t *p=length;*p;p++){unsigned digit=*p-L'0';if(digit>9||n>(~0ull-digit)/10)goto invalid;n=n*10+digit;}
         out->has_length=TRUE;out->length=n;
     }else if(GetLastError()!=ERROR_WINHTTP_HEADER_NOT_FOUND)goto fail;
-    out->request=r;return UPDATE_OK;
+    if((result=win_state(r))!=UPDATE_OK)goto fail;out->request=r;return UPDATE_OK;
 invalid:win_close(r);return UPDATE_INVALID;
-fail:win_close(r);return UPDATE_NETWORK;
+fail:if(result==UPDATE_OK)result=cancelled(cancel)?UPDATE_CANCELLED:UPDATE_NETWORK;win_close(r);return result;
 }
 static BOOL win_read(void *value,BYTE *bytes,DWORD capacity,DWORD *got){
-    WinRequest *r=value;ULONGLONG now=GetTickCount64();if(now>=r->deadline)return FALSE;
-    int timeout=(int)min(15000ull,r->deadline-now);
-    if(!WinHttpSetTimeouts(r->request,10000,10000,timeout,timeout))return FALSE;
-    return WinHttpReadData(r->request,bytes,capacity,got);
+    WinRequest *r=value;if(capacity>sizeof(r->buffer)||win_prepare(r)!=UPDATE_OK)return FALSE;
+    if(win_wait(r,WinHttpReadData(r->request,r->buffer,capacity,NULL),WINHTTP_CALLBACK_STATUS_READ_COMPLETE)!=UPDATE_OK||r->bytes>capacity)return FALSE;
+    memcpy(bytes,r->buffer,r->bytes);*got=r->bytes;return TRUE;
 }
 static const UpdateTransport windows_transport={win_open,win_read,win_close};
 UpdateStatus UpdateHttpGetUsing(const wchar_t *url,const wchar_t *accept,DWORD limit,UpdateCancel *cancel,UpdateHttpSink sink,void *context,DWORD *http_status,const UpdateTransport *transport,void *transport_context){
@@ -50,9 +88,9 @@ UpdateStatus UpdateHttpGetUsing(const wchar_t *url,const wchar_t *accept,DWORD l
     *http_status=0;wchar_t current[8193];wcscpy_s(current,_countof(current),url);ULONGLONG deadline=GetTickCount64()+120000;
     for(int hop=0;hop<=5;hop++){
         if(cancelled(cancel))return UPDATE_CANCELLED;if(GetTickCount64()>=deadline)return UPDATE_NETWORK;
-        UpdateHttpResponse response={0};UpdateStatus result=transport->open(transport_context,current,accept,deadline,&response);if(result!=UPDATE_OK)return result;
-        *http_status=response.status;
+        UpdateHttpResponse response={0};UpdateStatus result=transport->open(transport_context,current,accept,deadline,cancel,&response);if(result!=UPDATE_OK)return result;
         if(cancelled(cancel)){transport->close(response.request);return UPDATE_CANCELLED;}
+        if(GetTickCount64()>=deadline){transport->close(response.request);return UPDATE_NETWORK;}*http_status=response.status;
         if(response.status==301||response.status==302||response.status==303||response.status==307||response.status==308){
             wchar_t next[8193];DWORD count=_countof(next);BOOL valid=hop<5&&response.location[0]&&SUCCEEDED(UrlCombineW(current,response.location,next,&count,0))&&UpdateUrlAllowed(next)&&wcscmp(next,current);
             transport->close(response.request);if(!valid)return UPDATE_INVALID;wcscpy_s(current,_countof(current),next);continue;
@@ -63,8 +101,9 @@ UpdateStatus UpdateHttpGetUsing(const wchar_t *url,const wchar_t *accept,DWORD l
         for(;;){
             if(cancelled(cancel)){result=UPDATE_CANCELLED;break;}
             if(GetTickCount64()>=deadline){result=UPDATE_NETWORK;break;}
-            DWORD got=0;if(!transport->read(response.request,chunk,sizeof(chunk),&got)){result=UPDATE_NETWORK;break;}
+            DWORD got=0;if(!transport->read(response.request,chunk,sizeof(chunk),&got)){result=cancelled(cancel)?UPDATE_CANCELLED:UPDATE_NETWORK;break;}
             if(cancelled(cancel)){result=UPDATE_CANCELLED;break;}
+            if(GetTickCount64()>=deadline){result=UPDATE_NETWORK;break;}
             if(got>sizeof(chunk)||got>limit-used){result=UPDATE_INVALID;break;}
             if(!got){result=response.has_length&&used!=response.length?UPDATE_INVALID:UPDATE_OK;break;}
             if(!sink(chunk,got,context)){result=UPDATE_IO;break;}used+=got;

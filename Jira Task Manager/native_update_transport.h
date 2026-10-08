@@ -4,7 +4,7 @@
 /* Transport seam keeps release/redirect/size policy independent of OS I/O. */
 typedef struct UpdateHttpResponse { DWORD status; BOOL has_length; ULONGLONG length; wchar_t location[8193]; void *request; } UpdateHttpResponse;
 typedef struct UpdateTransport {
-    UpdateStatus (*open)(void *context,const wchar_t *url,const wchar_t *accept,ULONGLONG deadline,UpdateHttpResponse *out);
+    UpdateStatus (*open)(void *context,const wchar_t *url,const wchar_t *accept,ULONGLONG deadline,UpdateCancel *cancel,UpdateHttpResponse *out);
     BOOL (*read)(void *request,BYTE *bytes,DWORD capacity,DWORD *read);
     void (*close)(void *request);
 } UpdateTransport;
