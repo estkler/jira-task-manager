@@ -77,6 +77,21 @@ static BOOL CommentStateNames(const wchar_t *account,const wchar_t *key,
     return TRUE;
 }
 
+/* Jira's numeric comment sequence is a read watermark, not merely the last
+   visible ID. Filtering/deleting the tail must never move that watermark back.
+   Compare decimal strings without integer overflow; opaque IDs retain equality
+   behavior for compatibility. */
+static BOOL CommentIdNotAfter(const wchar_t *current,const wchar_t *watermark)
+{
+    if(!current||!*current||!watermark||!*watermark)return FALSE;
+    if(!wcscmp(current,watermark))return TRUE;
+    if(wcsspn(current,L"0123456789")!=wcslen(current)||
+       wcsspn(watermark,L"0123456789")!=wcslen(watermark))return FALSE;
+    while(*current==L'0')current++;while(*watermark==L'0')watermark++;
+    size_t a=wcslen(current),b=wcslen(watermark);
+    return a<b||(a==b&&wcscmp(current,watermark)<=0);
+}
+
 BOOL NativeCommentObserve(const wchar_t *path,const wchar_t *account,
     const wchar_t *issue_key,const wchar_t *latest_comment_id,BOOL authored_by_me,BOOL *unread)
 {
@@ -88,6 +103,7 @@ BOOL NativeCommentObserve(const wchar_t *path,const wchar_t *account,
        must be an arrival, rather than an initial-load baseline. */
     if(!latest_comment_id||!*latest_comment_id)
         return seen[0]||WritePrivateProfileStringW(section,entry,L"no-comments",path);
+    if(CommentIdNotAfter(latest_comment_id,seen))return TRUE;
     if(!seen[0]||authored_by_me){
         if(wcscmp(seen,latest_comment_id)&&!WritePrivateProfileStringW(section,entry,latest_comment_id,path))return FALSE;
         return TRUE;
@@ -99,8 +115,33 @@ BOOL NativeCommentObserve(const wchar_t *path,const wchar_t *account,
 BOOL NativeCommentMarkSeen(const wchar_t *path,const wchar_t *account,
     const wchar_t *issue_key,const wchar_t *latest_comment_id)
 {
-    wchar_t section[64],entry[64];
-    return path&&*path&&latest_comment_id&&*latest_comment_id&&
-        CommentStateNames(account,issue_key,section,entry)&&
+    wchar_t section[64],entry[64],seen[80];
+    if(!path||!*path||!latest_comment_id||!*latest_comment_id||
+       !CommentStateNames(account,issue_key,section,entry))return FALSE;
+    GetPrivateProfileStringW(section,entry,L"",seen,_countof(seen),path);
+    return CommentIdNotAfter(latest_comment_id,seen)||
         WritePrivateProfileStringW(section,entry,latest_comment_id,path);
+}
+
+BOOL NativeCommentObserveArrival(const wchar_t *path,const wchar_t *account,
+    const wchar_t *key,const wchar_t *latest,BOOL own,BOOL *unread,BOOL *arrival)
+{
+    if(!arrival||!unread)return FALSE;*arrival=FALSE;
+    if(!NativeCommentObserve(path,account,key,latest,own,unread))return FALSE;
+    wchar_t section[64],entry[64],observed[80];
+    if(!CommentStateNames(account,key,section,entry))return FALSE;
+    swprintf(section,64,L"ObservedComments_%016llx",(unsigned long long)HashText(account,1469598103934665603ULL));
+    GetPrivateProfileStringW(section,entry,L"",observed,_countof(observed),path);
+    const wchar_t *current=latest&&*latest?latest:L"no-comments";
+    /* Consume IDs separately from the latest pointer: deletion/reordering must
+       not re-announce a previously observed comment, including while disabled. */
+    wchar_t consumed_entry[96];swprintf(consumed_entry,_countof(consumed_entry),L"%ls_comment_%016llx",entry,
+        (unsigned long long)HashText(current,1469598103934665603ULL));
+    BOOL consumed=GetPrivateProfileIntW(section,consumed_entry,0,path)!=0;
+    if(!consumed&&!WritePrivateProfileStringW(section,consumed_entry,L"1",path))return FALSE;
+    if(!wcscmp(observed,current))return TRUE;
+    if(!WritePrivateProfileStringW(section,entry,current,path))return FALSE;
+    BOOL older_numeric=CommentIdNotAfter(current,observed);
+    *arrival=!consumed&&!older_numeric&&observed[0]&&latest&&*latest&&*unread&&!own;
+    return TRUE;
 }

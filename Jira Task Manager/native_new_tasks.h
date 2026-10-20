@@ -10,10 +10,13 @@ BOOL NativeNewTaskMarkSeen(const wchar_t *settings_path,const wchar_t *account,c
 BOOL NativeNewTasksSeedReporter(const wchar_t *settings_path,const wchar_t *account,
     const wchar_t *const *keys,const BOOL *reporter_only,int count);
 
-/* Existing comments form the first-load baseline. A changed latest comment
-   stays unread across refreshes and restarts until explicitly opened. */
+/* Existing comments form the first-load baseline. Jira numeric comment IDs
+   retain a read high-watermark: exposing/deleting older visible history cannot
+   re-notify it. Later comments stay unread until explicitly opened. */
 BOOL NativeCommentObserve(const wchar_t *settings_path,const wchar_t *account,
     const wchar_t *issue_key,const wchar_t *latest_comment_id,BOOL authored_by_me,BOOL *unread);
+BOOL NativeCommentObserveArrival(const wchar_t *settings_path,const wchar_t *account,
+    const wchar_t *issue_key,const wchar_t *latest_comment_id,BOOL authored_by_me,BOOL *unread,BOOL *arrival);
 BOOL NativeCommentMarkSeen(const wchar_t *settings_path,const wchar_t *account,
     const wchar_t *issue_key,const wchar_t *latest_comment_id);
 

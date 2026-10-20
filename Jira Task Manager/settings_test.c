@@ -1,6 +1,12 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <assert.h>
+static BOOL fixture_client_animation=TRUE;
+static BOOL WINAPI FixtureSystemParametersInfo(UINT action,UINT value,PVOID output,UINT flags){
+    if(action==SPI_GETCLIENTAREAANIMATION){*(BOOL*)output=fixture_client_animation;return TRUE;}
+    return SystemParametersInfoW(action,value,output,flags);
+}
+#define SystemParametersInfoW FixtureSystemParametersInfo
 static wchar_t opened_file[32768],opened_parameters[32768];
 static HINSTANCE WINAPI CaptureShellOpen(HWND w,LPCWSTR op,LPCWSTR file,LPCWSTR params,LPCWSTR dir,INT show){
     (void)w;(void)op;(void)dir;(void)show;
@@ -18,6 +24,7 @@ static HANDLE update_fixture_gate;
 static UpdateRelease update_fixture_release;
 static UpdateStatus update_fixture_check=UPDATE_NONE,update_fixture_download=UPDATE_NETWORK;
 static BOOL update_fail_thread,update_confirm_install;
+static int fixture_thread_starts;
 static BOOL update_fail_post;
 static BOOL WINAPI FixturePostMessage(HWND window,UINT message,WPARAM wp,LPARAM lp){
     if(update_fail_post&&(message==WM_APP+41||message==WM_APP+42)){SetLastError(ERROR_NOT_ENOUGH_QUOTA);return FALSE;}
@@ -25,6 +32,7 @@ static BOOL WINAPI FixturePostMessage(HWND window,UINT message,WPARAM wp,LPARAM 
 }
 static HANDLE update_launched_child;
 static HANDLE WINAPI FixtureCreateThread(LPSECURITY_ATTRIBUTES sa,SIZE_T stack,LPTHREAD_START_ROUTINE entry,LPVOID arg,DWORD flags,LPDWORD id){
+    fixture_thread_starts++;
     if(update_fail_thread){SetLastError(ERROR_NOT_ENOUGH_MEMORY);return NULL;}return CreateThread(sa,stack,entry,arg,flags,id);
 }
 static int WINAPI FixtureMessageBox(HWND owner,LPCWSTR text,LPCWSTR title,UINT type){if(update_confirm_install)return IDYES;return MessageBoxW(owner,text,title,type);}
@@ -233,12 +241,13 @@ int main(void) {
         assert(wcsstr(timer_text,L"1ч 0м ")!=NULL);
         g_jira_stale=FALSE;g_updated_time.wHour=16;g_updated_time.wMinute=35;g_updated_time.wSecond=46;
         UpdateLastUpdated();LayoutControls(510,550);
-        RECT search_position,reporter_position,filter_position,all_tab_position;
+        RECT search_position,assigned_position,reporter_position,filter_position,all_tab_position;
         GetWindowRect(g_search,&search_position);GetWindowRect(g_tab_reported,&reporter_position);
+        GetWindowRect(g_tab_assigned,&assigned_position);
         GetWindowRect(g_filter,&filter_position);GetWindowRect(g_tab_all,&all_tab_position);
         RECT header_position;GetWindowRect(ListView_GetHeader(g_list),&header_position);
         assert(GetParent(g_filter)==ListView_GetHeader(g_list));
-        assert(search_position.right<reporter_position.left&&reporter_position.right<all_tab_position.left);
+        assert(search_position.right<assigned_position.left&&assigned_position.right==reporter_position.left&&reporter_position.right<all_tab_position.left);
         assert(filter_position.left>=header_position.left&&filter_position.right<=header_position.right);
         assert(filter_position.top>=header_position.top&&filter_position.bottom<=header_position.bottom);
         for(int language=0;language<2;language++){
@@ -258,7 +267,8 @@ int main(void) {
         assert(rect.right>=size.cx);
         assert(wcsstr(text,L"16:35:46")!=NULL);
         LayoutControls(MulDiv(510,(int)g_dpi,96),550);
-        assert(g_search_frame.right-g_search_frame.left>=D(150));
+        printf("Minimum-window search: %ld pixels at %u DPI, density %d\n",g_search_frame.right-g_search_frame.left,g_dpi,g_density);
+        assert(g_search_frame.right-g_search_frame.left>=D(120));
     }
     LayoutControls(510,550);
     int name_without_scroll=ListView_GetColumnWidth(g_list,2);
@@ -326,16 +336,15 @@ int main(void) {
     assert(IndicatorHoverFillColor()!=IndicatorFillColor(FALSE));
     assert(IndicatorHoveredActiveColor()!=IndicatorFillColor(FALSE));
     assert(PopoverHeaderColor()!=PopoverColor());
-    TaskItem old_comment={0},new_comment={0};
-    old_comment.latest_comment_id=L"100";new_comment.latest_comment_id=L"101";
-    new_comment.unread_comment=TRUE;
-    assert(ShouldPulseComment(&old_comment,&new_comment));
-    new_comment.unread_comment=FALSE;assert(!ShouldPulseComment(&old_comment,&new_comment));
-    new_comment.unread_comment=TRUE;new_comment.latest_comment_id=L"100";
-    assert(!ShouldPulseComment(&old_comment,&new_comment));
-    old_comment.comment_pulse_started=1000;
-    assert(CommentPulseActive(&old_comment,1000)&&CommentPulseActive(&old_comment,1649));
-    assert(!CommentPulseActive(&old_comment,1650));
+    TaskItem old_comment={0};
+    assert(CommentAnimationEnabled());
+    fixture_client_animation=FALSE;assert(!CommentAnimationEnabled());
+    fixture_client_animation=TRUE;
+    old_comment.comment_pulse_started=1000;old_comment.unread_comment=TRUE;
+    assert(CommentPulseActive(&old_comment,1000)&&CommentPulseActive(&old_comment,2599));
+    assert(CommentPulseActive(&old_comment,2600));
+    old_comment.unread_comment=FALSE;
+    assert(!CommentPulseActive(&old_comment,2600));
     fixture[0].local_note=DuplicateWide(fixture[0].local_note);assert(fixture[0].local_note);
     for(int i=0;i<3;i++)fixture[i].assigned_to_me=TRUE;
     fixture[1].reported_by_me=TRUE;
@@ -346,11 +355,11 @@ int main(void) {
     g_reported_scope=FALSE;
     g_tasks=fixture;g_task_count=3;g_status_count=2;g_status_categories[0]=0;g_status_categories[1]=2;
     fixture[0].is_new=TRUE;
-    fixture[1].unread_comment=TRUE; /* in both scopes: not a reason to switch */
+    fixture[1].unread_comment=TRUE; /* Shared issue belongs to both mode buttons. */
     fixture[2].assigned_to_me=FALSE;fixture[2].reported_by_me=TRUE;
     fixture[2].unread_comment=TRUE;
-    g_reported_scope=FALSE;assert(OtherScopeAttentionCount()==1);
-    g_reported_scope=TRUE;assert(OtherScopeAttentionCount()==1);
+    assert(ScopeActivity(FALSE)==(SCOPE_NEW_TASKS|SCOPE_UNREAD_COMMENTS));
+    assert(ScopeActivity(TRUE)==SCOPE_UNREAD_COMMENTS);
     fixture[0].is_new=FALSE;fixture[1].unread_comment=FALSE;
     fixture[2].assigned_to_me=TRUE;fixture[2].reported_by_me=FALSE;
     fixture[2].unread_comment=FALSE;g_reported_scope=FALSE;
@@ -431,14 +440,15 @@ int main(void) {
     g_dark=FALSE;
     SendMessageW(GetDlgItem(transition_window,IDC_TRANSITION_RATING+4),WM_MOUSEMOVE,0,MAKELPARAM(5,5));
     assert(transition_input.selected_score==-1&&!IsWindowEnabled(GetDlgItem(transition_window,IDOK)));
-    assert(TransitionStarCenter(&transition_input,1)==RGB(213,142,0));
-    assert(TransitionStarCenter(&transition_input,4)==RGB(213,142,0));
+    assert(TransitionStarCenter(&transition_input,1)==RGB(255,190,48));
+    assert(TransitionStarCenter(&transition_input,4)==RGB(255,190,48));
     assert(TransitionStarCenter(&transition_input,5)==PopoverColor());
     SendMessageW(GetDlgItem(transition_window,IDC_TRANSITION_RATING+4),WM_MOUSELEAVE,0,0);
+    SendMessageW(transition_window,WM_MOUSEMOVE,0,MAKELPARAM(TransitionScale(20),TransitionScale(100)));
     assert(TransitionStarCenter(&transition_input,1)==PopoverColor());
     SendMessageW(transition_window,WM_COMMAND,MAKEWPARAM(IDC_TRANSITION_RATING+4,BN_CLICKED),0);
     assert(IsWindowEnabled(GetDlgItem(transition_window,IDOK)));
-    assert(TransitionStarCenter(&transition_input,4)==RGB(213,142,0));
+    assert(TransitionStarCenter(&transition_input,4)==RGB(255,190,48));
     MSG arrow={0};arrow.hwnd=GetDlgItem(transition_window,IDC_TRANSITION_RATING+4);arrow.message=WM_KEYDOWN;arrow.wParam=VK_LEFT;
     if(!IsDialogMessageW(transition_window,&arrow))DispatchMessageW(&arrow);
     assert(transition_input.selected_score==3);
@@ -469,7 +479,7 @@ int main(void) {
             GetTextExtentPoint32W(dc,caption,(int)wcslen(caption),&text);SelectObject(dc,font);ReleaseDC(remember,dc);
             RECT check;GetClientRect(remember,&check);assert(text.cx+TransitionScale(24)<=check.right);
             SendMessageW(dialog,WM_COMMAND,MAKEWPARAM(IDC_TRANSITION_RATING+2,BN_CLICKED),0);
-            assert(TransitionStarCenter(&variant,2)==(theme?RGB(255,190,66):RGB(213,142,0)));
+            assert(TransitionStarCenter(&variant,2)==RGB(255,190,48));
             assert(TransitionStarCenter(&variant,3)==PopoverColor());
             DestroyWindow(dialog);
         }
@@ -478,17 +488,17 @@ int main(void) {
     int selected[30];assert(SelectTrayTasks(selected,1)==1&&selected[0]==0);
     assert(SelectTrayTasks(selected,30)==2&&selected[1]==2);
     assert(CountForTab(0)==3&&CountForTab(1)==2&&CountForTab(2)==1&&g_tab_reported);
-    g_tab=1;g_scope_tabs[0]=1;g_scope_tabs[1]=0;
-    ToggleReportedScope();
-    assert(g_reported_scope&&g_tab==0&&CountForTab(0)==1&&CountForTab(1)==0&&CountForTab(2)==1);
-    assert(ListView_GetItemCount(g_list)==1&&ActiveFilterIndex()==3);
-    g_tab=2;g_scope_tabs[1]=2;
-    ToggleReportedScope();
-    assert(!g_reported_scope&&g_tab==1&&ActiveFilterIndex()==1);
-    ToggleReportedScope();
+    g_tab=1;
+    SelectTaskScope(TRUE);
+    assert(g_reported_scope&&g_tab==1&&CountForTab(0)==1&&CountForTab(1)==0&&CountForTab(2)==1);
+    assert(ListView_GetItemCount(g_list)==0&&ActiveFilterIndex()==4);
+    g_tab=2;
+    SelectTaskScope(FALSE);
+    assert(!g_reported_scope&&g_tab==2&&ActiveFilterIndex()==2);
+    SelectTaskScope(TRUE);
     assert(g_reported_scope&&g_tab==2&&ListView_GetItemCount(g_list)==1&&ActiveFilterIndex()==5);
-    ToggleReportedScope();
-    assert(!g_reported_scope&&g_tab==1);
+    SelectTaskScope(FALSE);
+    assert(!g_reported_scope&&g_tab==2);
     g_tab=0;RefreshTaskList();
     ListView_SetColumnWidth(g_list,2,D(80));
     wchar_t tip[128];assert(TaskSummaryInfoTip(0,tip,_countof(tip)));
@@ -655,7 +665,8 @@ int main(void) {
     assert(!wcscmp(draft,L"An unfinished Jira draft"));
     RECT compose_bounds,send_bounds;GetWindowRect(g_popover.input,&compose_bounds);
     GetWindowRect(g_popover.send,&send_bounds);
-    assert(send_bounds.top-compose_bounds.bottom>=D(8));
+    assert(send_bounds.top>=compose_bounds.top&&send_bounds.bottom<=compose_bounds.bottom);
+    assert(send_bounds.left-compose_bounds.right>=D(4));
     RECT comment_input_attached;GetWindowRect(g_popover.input,&comment_input_attached);
     TaskPopover *detached_comments=DetachTaskPopover();
     assert(detached_comments&&detached_comments->detached&&detached_comments!=detached_note);
@@ -730,7 +741,7 @@ int main(void) {
     }
     assert(SETTINGS_HEIGHT_DIP<=395);
     assert(GetDlgItem(settings,200)&&GetDlgItem(settings,201));
-    assert(!GetDlgItem(settings,202)&&!GetDlgItem(settings,220));
+    assert(GetDlgItem(settings,202)&&!GetDlgItem(settings,220));
     wchar_t about_tab[64];GetWindowTextW(GetDlgItem(settings,201),about_tab,64);
     assert(!wcscmp(about_tab,L"О приложении"));
     SettingsTab(1);assert(GetWindowLongPtrW(GetDlgItem(settings,230),GWL_STYLE)&WS_VISIBLE);

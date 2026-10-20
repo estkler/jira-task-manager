@@ -62,13 +62,16 @@ int main(void){
         assert(posts==(scenario==1?0:scenario==2?1:2));
     }
     JiraSnapshot snapshot={0};scenario=4;pages=posts=0;
+    wcscpy_s(c.host,256,L"JIRA.Example.Test");wcscpy_s(c.prefix,512,L"/jira");c.port=443;
     assert(JiraLoad(&c,&snapshot)&&snapshot.count==2&&pages==2);
     assert(!wcscmp(snapshot.identity.key,L"user-1")&&!wcscmp(snapshot.identity.name,L"test-account"));
+    assert(!wcscmp(snapshot.server,L"jira.example.test:443/jira"));
     JiraFreeSnapshot(&snapshot);
     scenario=5;pages=posts=0;
     assert(!JiraLoad(&c,&snapshot)&&snapshot.count==0&&snapshot.items==NULL&&posts==0);
     scenario=7;pages=posts=0;
     assert(JiraLoadWithReporter(&c,&snapshot,FALSE)&&snapshot.count==3&&pages==2);
+    assert(!wcscmp(snapshot.server,L"jira.example.test:443/jira"));
     assert(snapshot.items[0].assigned_to_me&&!snapshot.items[0].reported_by_me);
     assert(snapshot.items[1].assigned_to_me&&snapshot.items[1].reported_by_me);
     assert(!snapshot.items[2].assigned_to_me&&snapshot.items[2].reported_by_me);
@@ -81,4 +84,5 @@ int main(void){
     assert(posts==1&&c.write_attempted);
     assert(!JiraPostComment(&c,L"A-1",L""));
     puts("Jira operations tests passed: pagination, preflight, partial failure, no POST retry");
+    return 0;
 }

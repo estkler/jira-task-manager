@@ -41,6 +41,22 @@ int main(void)
     assert(NativeCommentObserve(path,L"bob",L"PDES-1",L"103",FALSE,&unread)&&!unread);
     assert(NativeCommentObserve(path,L"alice",L"PDES-empty",L"",FALSE,&unread)&&!unread);
     assert(NativeCommentObserve(path,L"alice",L"PDES-empty",L"200",FALSE,&unread)&&unread);
+    /* Hiding Robot in PDES-6361 exposes an older human comment, not an arrival. */
+    BOOL comment_arrival=TRUE;
+    assert(NativeCommentMarkSeen(path,L"alice",L"PDES-6361",L"3589677"));
+    assert(NativeCommentObserveArrival(path,L"alice",L"PDES-6361",L"3588089",FALSE,&unread,&comment_arrival));
+    assert(!unread&&!comment_arrival);
+    assert(NativeCommentObserveArrival(path,L"alice",L"PDES-6361",L"3588089",FALSE,&unread,&comment_arrival));
+    assert(!unread&&!comment_arrival); /* Refresh/restart cannot restore the false indicator. */
+    assert(NativeCommentMarkSeen(path,L"alice",L"PDES-6361",L"3588089"));
+    assert(NativeCommentObserve(path,L"alice",L"PDES-6361",L"3589676",FALSE,&unread)&&!unread);
+    assert(NativeCommentObserve(path,L"alice",L"PDES-6361",L"3580000",TRUE,&unread)&&!unread);
+    assert(NativeCommentObserve(path,L"alice",L"PDES-6361",L"3589676",FALSE,&unread)&&!unread);
+    assert(NativeCommentObserveArrival(path,L"alice",L"PDES-6361",L"3589678",FALSE,&unread,&comment_arrival));
+    assert(unread&&comment_arrival); /* A genuinely new later message still notifies. */
+    assert(NativeCommentMarkSeen(path,L"alice",L"PDES-large",L"999999999999999999999"));
+    assert(NativeCommentObserve(path,L"alice",L"PDES-large",L"0999999999999999999998",FALSE,&unread)&&!unread);
+    assert(NativeCommentObserve(path,L"alice",L"PDES-large",L"1000000000000000000000",FALSE,&unread)&&unread);
     DeleteFileW(path);
     return 0;
 }

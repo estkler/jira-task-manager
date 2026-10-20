@@ -3,14 +3,26 @@
 A native Windows desktop client for personal Jira tasks, built with the Win32 API.
 No third-party UI or runtime libraries are required.
 
-Version: **0.9.30**.
+Version: **0.9.31**.
 
 Features include task search and sorting, assigned/reported scopes, status filters,
 Jira workflow transitions, encrypted local notes and completion templates, Jira
 comments with unread indicators, detachable panels, a workday timer, tray controls,
 and Russian/English interfaces with light/dark themes. Version 0.9.30 adds manual
-native updates, distinct own/colleague comment styling, and incoming/outgoing
-scope icons with a blue cross-mode activity indicator.
+native updates, own-comment author labels, and incoming/outgoing
+scope icons. Two permanent incoming/outgoing buttons use quiet selection styling,
+with per-scope update counters, detailed tooltips and stable toolbar geometry.
+Search is left-aligned; the scope glyphs and counters share a compact 14-DIP size.
+Visible unread comment icons have a light blue fill and two gentle local movements
+every six seconds until read, without additional Jira polling.
+
+Version 0.9.31 adds persistent task bookmarks, modeless task completion with bright
+rating stars and confirmed-status row feedback, comment/status tray alerts,
+comment images and a native viewer, avatars with a scoped cache, and compact
+notification settings with a separate Advanced window. Jira refresh intervals
+cannot be shorter than 15 minutes. Search stays intact when using bookmarks;
+checkbox captions follow the active theme. Completion feedback never substitutes
+an operation label for the actual Jira status or automatically retries a POST.
 
 ## Updates
 
@@ -53,6 +65,6 @@ completion templates and the workday timer stay intact. Jira tokens remain in
 Windows Credential Manager; they are not stored in this repository.
 
 Build output, local settings, diagnostic logs, backups and shortcuts are excluded.
-Release publication is manual. Comment image viewing and tray alerts for new
-comments are not included in this version; existing task-arrival notifications
-and comment unread indicators remain available.
+Release publication is manual. Settings, credentials and private diagnostics are
+not release assets. See the application README for media/cache limits and the
+scope of notification preferences.

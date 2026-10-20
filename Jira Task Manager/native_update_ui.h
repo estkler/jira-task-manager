@@ -29,7 +29,7 @@ static BOOL UpdateInstallAllowed(wchar_t *reason,size_t capacity){
     const wchar_t *message=NULL;
     if(g_jira_busy||UpdateSettingsAccountBusy())message=g_russian?L"Дождитесь завершения запроса Jira.":L"Wait for the Jira request to finish.";
     else if(g_completion_active_count)message=g_russian?L"Закройте окно завершения задачи.":L"Close the task completion dialog.";
-    else if(g_editing_start||g_editing_note)message=g_russian?L"Сохраните или отмените текущее редактирование.":L"Save or cancel the current edit.";
+    else if(g_editing_start||g_editing_note||g_bookmarks.editing)message=g_russian?L"Сохраните или отмените текущее редактирование.":L"Save or cancel the current edit.";
     else if(UpdateSettingsDirty())message=g_russian?L"Сохраните или отмените изменения настроек.":L"Save or cancel your settings changes.";
     else{
         BOOL dirty=UpdatePopoverDirty(&g_attached_popover);for(TaskPopover *p=g_detached_popovers;p;p=p->next)dirty|=UpdatePopoverDirty(p);

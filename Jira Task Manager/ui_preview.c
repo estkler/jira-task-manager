@@ -1,7 +1,20 @@
 /* Isolated UI verification harness. Uses synthetic data and never connects to Jira. */
+#ifdef COMMENT_MEDIA_PREVIEW
+#include <windows.h>
+#include <shellapi.h>
+static HINSTANCE WINAPI MediaPreviewProfile(HWND window,LPCWSTR operation,LPCWSTR file,LPCWSTR parameters,LPCWSTR directory,INT show)
+{
+    (void)operation;(void)file;(void)parameters;(void)directory;(void)show;
+    MessageBoxW(window,L"Это офлайн-предпросмотр. В рабочей версии здесь откроется профиль автора в Jira.",L"Профиль Jira · Предпросмотр",MB_OK|MB_ICONINFORMATION);return (HINSTANCE)33;
+}
+#define ShellExecuteW MediaPreviewProfile
+#endif
 #define wWinMain ProductEntryPoint
 #include "native.c"
 #undef wWinMain
+#ifdef COMMENT_MEDIA_PREVIEW
+#include "image_fixture.h"
+#endif
 
 static BOOL preview_resize_check;
 static BOOL preview_comment_style;
@@ -37,6 +50,17 @@ static void PopulatePreviewComments(void)
              i==1?L"Спасибо! Посмотрел замечания, сегодня внесу изменения и пришлю новый вариант.":
              L"Отлично, буду ждать. Если возникнут вопросы — напиши здесь."):
             L"Preview comment: checking text alignment, wrapping and scrolling while this window is dragged and resized.");
+#ifdef COMMENT_MEDIA_PREVIEW
+        size_t length;unsigned char *bytes=ImageFixtureBytes(48,48,&length);
+        comment->avatar=NativeImageCreateSized(bytes,length,48,48);
+        wcscpy_s(comment->profile_url,_countof(comment->profile_url),L"https://jira.example.test/secure/ViewProfile.jspa?name=preview-author");
+        if(i==2){
+            wcscpy_s(comment->body,_countof(comment->body),L"Вот изображение из комментария. Нажми на миниатюру, чтобы увеличить.");
+            comment->image_count=1;comment->images=calloc(1,sizeof(JiraCommentImage));
+            wcscpy_s(comment->images[0].filename,256,L"thumbnail-example.png");
+            bytes=ImageFixtureBytes(720,360,&length);comment->images[0].image=NativeImageCreate(bytes,length);
+        }
+#endif
     }
     RefreshTaskPopover();EnableWindow(g_popover.send,FALSE);
     g_active_popover=previous;
@@ -104,6 +128,9 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE previous,PWSTR command_line,int
         100,100,MulDiv(610,g_dpi,96),MulDiv(460,g_dpi,96),NULL,NULL,instance,NULL);
 #ifdef SCOPE_ICON_PREVIEW
     SetWindowTextW(window,L"Jira Task Manager — Scope icon preview (offline)");
+#endif
+#ifdef COMMENT_MEDIA_PREVIEW
+    SetWindowTextW(window,L"Jira Task Manager — ПРОСМОТР · Картинки и авторы");
 #endif
     g_status_count=3;
     wcscpy_s(g_status_names[0],128,L"To Do");wcscpy_s(g_status_names[1],128,L"In Progress");wcscpy_s(g_status_names[2],128,L"Done");
