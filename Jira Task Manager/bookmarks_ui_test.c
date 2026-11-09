@@ -58,6 +58,76 @@ static void edit_action_shapes(void){
     assert(NativeBookmarksSet(&g_bookmarks,L"PDES-6507",FALSE));BookmarkDrawButton(&draw);GdiFlush();for(int y=0;y<24;y++)for(int x=0;x<24;x++)assert(clean[y*24+x]==(GetPixel(memory,x,y)==MutedColor()));
     SelectObject(memory,old);DeleteObject(bitmap);DeleteDC(memory);ReleaseDC(g_window,screen);BookmarkCancel();
 }
+static COLORREF gutter_pixel(int row){
+    RECT client,cell;GetClientRect(g_list,&client);assert(ListView_GetItemRect(g_list,row,&cell,LVIR_BOUNDS));
+    HDC screen=GetDC(g_list),memory=CreateCompatibleDC(screen);assert(memory);
+    HBITMAP bitmap=CreateCompatibleBitmap(screen,client.right,max(client.bottom,cell.bottom));assert(bitmap);
+    HGDIOBJ old=SelectObject(memory,bitmap);NMLVCUSTOMDRAW draw={0};draw.nmcd.hdc=memory;
+    draw.nmcd.dwDrawStage=CDDS_ITEMPREPAINT;draw.nmcd.dwItemSpec=row;DrawListCustom(&draw);GdiFlush();
+    COLORREF pixel=GetPixel(memory,D(13),(cell.top+cell.bottom-1)/2);
+    SelectObject(memory,old);DeleteObject(bitmap);DeleteDC(memory);ReleaseDC(g_list,screen);return pixel;
+}
+typedef struct BookmarkRowPixels {COLORREF *pixels;int width,height;} BookmarkRowPixels;
+static BookmarkRowPixels bookmark_row_pixels(int row){
+    RECT client,cell;GetClientRect(g_list,&client);assert(ListView_GetItemRect(g_list,row,&cell,LVIR_BOUNDS));
+    int width=client.right,height=max(client.bottom,cell.bottom);void *bits=NULL;
+    BITMAPINFO info={0};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);info.bmiHeader.biWidth=width;
+    info.bmiHeader.biHeight=-height;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;info.bmiHeader.biCompression=BI_RGB;
+    HDC screen=GetDC(g_list),memory=CreateCompatibleDC(screen);assert(memory);
+    HBITMAP bitmap=CreateDIBSection(screen,&info,DIB_RGB_COLORS,&bits,NULL,0);assert(bitmap&&bits);
+    HGDIOBJ old=SelectObject(memory,bitmap);NMLVCUSTOMDRAW draw={0};draw.nmcd.hdc=memory;
+    draw.nmcd.dwDrawStage=CDDS_ITEMPREPAINT;draw.nmcd.dwItemSpec=row;DrawListCustom(&draw);GdiFlush();
+    BookmarkRowPixels result={.width=ListView_GetColumnWidth(g_list,0)+ListView_GetColumnWidth(g_list,1),.height=cell.bottom-cell.top};
+    result.pixels=malloc((size_t)result.width*result.height*sizeof(COLORREF));assert(result.pixels);
+    for(int y=0;y<result.height;y++)for(int x=0;x<result.width;x++){
+        DWORD pixel=((DWORD*)bits)[(cell.top+y)*width+x];
+        result.pixels[y*result.width+x]=RGB((pixel>>16)&255,(pixel>>8)&255,pixel&255);
+    }
+    SelectObject(memory,old);DeleteObject(bitmap);DeleteDC(memory);ReleaseDC(g_list,screen);return result;
+}
+static void assert_quiet_key_marker(BookmarkRowPixels before,BookmarkRowPixels after){
+    assert(before.width==after.width&&before.height==after.height);
+    HDC dc=GetDC(g_list);HGDIOBJ font=SelectObject(dc,g_font);SIZE key_size;
+    GetTextExtentPoint32W(dc,L"PDES-6507",9,&key_size);SelectObject(dc,font);ReleaseDC(g_list,dc);
+    int gutter=ListView_GetColumnWidth(g_list,0),key_end=gutter+D(7)+key_size.cx;
+    RECT changed={after.width,after.height,0,0};int count=0;
+    for(int y=0;y<after.height;y++)for(int x=0;x<after.width;x++){
+        COLORREF old=before.pixels[y*before.width+x],now=after.pixels[y*after.width+x];
+        if(old==now)continue;
+        assert(x>=key_end+D(3)&&"Bookmarking must preserve the number and the full issue key");
+        assert(now!=AccentColor()&&"The passive marker must not look like the blue bookmark-selection mode");
+        changed.left=min(changed.left,x);changed.right=max(changed.right,x+1);changed.top=min(changed.top,y);changed.bottom=max(changed.bottom,y+1);count++;
+    }
+    assert(count>0&&"A saved bookmark must paint a small contour beside its issue key");
+    assert(changed.right-changed.left<=D(10)&&changed.bottom-changed.top<=D(13));
+    int cx=(changed.left+changed.right)/2,cy=(changed.top+changed.bottom)/2;
+    assert(after.pixels[cy*after.width+cx]==before.pixels[cy*before.width+cx]&&"Bookmark contour must remain hollow");
+    free(before.pixels);free(after.pixels);
+}
+static void saved_bookmark_row_markers(void){
+    g_bookmarks.showing=FALSE;g_sort_column=-1;g_tab=1;
+    for(int dpi=96;dpi<=192;dpi+=48)for(int density=0;density<2;density++)for(int dark=0;dark<2;dark++)for(int russian=0;russian<2;russian++){
+        g_dpi=dpi;g_density=density;g_dark=dark;g_russian=russian;RecreateBrushes();UpdateFonts();
+        SetWindowPos(g_window,NULL,0,0,D(900),D(590),SWP_NOZORDER|SWP_NOACTIVATE);BookmarkRefresh();
+        RECT before=g_search_frame;int width=ListView_GetColumnWidth(g_list,0);
+        BookmarkRowPixels before_pixels=bookmark_row_pixels(0);
+        BookmarkToggleTask(L"PDES-6507");
+        assert(!g_bookmarks.editing&&!g_bookmarks.showing&&g_bookmarks.saved.count==1);
+        assert_quiet_key_marker(before_pixels,bookmark_row_pixels(0));
+        wchar_t accessible[64];ListView_GetItemText(g_list,0,0,accessible,64);
+        assert(accessible[0]==L'1'&&wcsstr(accessible,g_russian?L"В закладках":L"Bookmarked"));
+        assert(gutter_pixel(1)!=AccentColor());
+        assert(width==ListView_GetColumnWidth(g_list,0)&&EqualRect(&before,&g_search_frame));
+        /* Membership is real persisted state; restarting the model keeps the marker. */
+        NativeBookmarksFree(&g_bookmarks);assert(NativeBookmarksLoad(&g_bookmarks,g_settings_path,g_bookmark_server,g_bookmark_account));BookmarkRefresh();
+        assert(gutter_pixel(0)!=AccentColor());
+        BookmarkActivate();assert(g_bookmarks.showing&&ListView_GetItemCount(g_list)==1&&gutter_pixel(0)!=AccentColor());
+        BookmarkActivate();BookmarkBegin();assert(gutter_pixel(0)==AccentColor()&&gutter_pixel(1)!=AccentColor());BookmarkCancel();
+        BookmarkToggleTask(L"PDES-6507");assert(g_bookmarks.saved.count==0&&gutter_pixel(0)!=AccentColor());
+        g_bookmark_notice_until=0;KillTimer(g_window,785);
+    }
+    g_dark=FALSE;g_density=1;g_dpi=96;g_russian=TRUE;g_tab=0;RecreateBrushes();UpdateFonts();BookmarkRefresh();
+}
 static void drag_autoscroll(void){
     TaskItem *previous=g_tasks;int previous_count=g_task_count;
     TaskItem many[80];wchar_t keys[80][80];
@@ -91,7 +161,50 @@ static void preserve_search_during_bookmark_actions(void){
     click(IDC_TAB_CURRENT);GetWindowTextW(g_search,query,256);assert(!wcscmp(query,L"Serial")&&ListView_GetItemCount(g_list)==1);
     SetWindowTextW(g_search,L"");
 }
+static void bookmark_footer_counts(void){
+    TaskItem *previous=g_tasks;int previous_count=g_task_count;
+    TaskItem tasks[5];wchar_t keys[21][80];
+    for(int i=0;i<21;i++)swprintf(keys[i],80,L"FOOTER-%d",i);
+    for(int i=0;i<5;i++)tasks[i]=(TaskItem){.key=keys[i],.summary=i<3?L"Match":L"Other",.status=STATUS_TODO,.assigned_to_me=TRUE};
+    g_tasks=tasks;g_task_count=5;
+    const struct {int total,shown;BOOL russian;const wchar_t *query,*expected;} cases[]={
+        {5,5,TRUE,L"",L"Закладки: 5"},
+        {5,3,TRUE,L"Match",L"Показано 3 из 5 закладок"},
+        {5,0,TRUE,L"Missing",L"Показано 0 из 5 закладок"},
+        {1,1,TRUE,L"",L"Закладки: 1"},
+        {1,0,TRUE,L"Missing",L"Показано 0 из 1 закладки"},
+        {11,3,TRUE,L"Match",L"Показано 3 из 11 закладок"},
+        {21,3,TRUE,L"Match",L"Показано 3 из 21 закладки"},
+        {5,5,FALSE,L"",L"Bookmarks: 5"},
+        {5,3,FALSE,L"Match",L"Showing 3 of 5 bookmarks"},
+        {5,0,FALSE,L"Missing",L"Showing 0 of 5 bookmarks"},
+        {1,1,FALSE,L"",L"Bookmarks: 1"},
+        {1,0,FALSE,L"Missing",L"Showing 0 of 1 bookmark"}
+    };
+    for(int i=0;i<_countof(cases);i++){
+        NativeBookmarksFree(&g_bookmarks);g_bookmark_notice_until=0;g_russian=cases[i].russian;
+        assert(NativeBookmarksBegin(&g_bookmarks));
+        for(int k=0;k<cases[i].total;k++)assert(NativeBookmarksSet(&g_bookmarks,keys[k],TRUE));
+        SetWindowTextW(g_search,cases[i].query);BookmarkSave();
+        assert(g_bookmarks.showing&&ListView_GetItemCount(g_list)==cases[i].shown);
+        wchar_t footer[256];GetWindowTextW(g_updated,footer,256);
+        if(wcscmp(footer,cases[i].expected))fwprintf(stderr,L"Footer case %d: expected [%ls], got [%ls]\n",i,cases[i].expected,footer);
+        assert(!wcscmp(footer,cases[i].expected));
+    }
+    for(int russian=0;russian<2;russian++){
+        g_russian=russian;BookmarkBegin();wchar_t footer[256];GetWindowTextW(g_updated,footer,256);
+        assert(!wcscmp(footer,russian?L"Выбрано: 1 · Enter — завершить · Esc — отменить":L"Selected: 1 · Enter — finish · Esc — cancel"));
+        BookmarkToggleTask(keys[1]);GetWindowTextW(g_updated,footer,256);
+        assert(!wcscmp(footer,russian?L"Выбрано: 2 · \u2713 сохранить · Esc — отменить":L"Selected: 2 · \u2713 save · Esc — cancel"));
+        BookmarkCancel();BookmarkShowCleared();BookmarkFooterOverride();GetWindowTextW(g_updated,footer,256);
+        assert(!wcscmp(footer,russian?L"Закладки удалены · показаны все задачи":L"Bookmarks cleared · showing all tasks"));
+        g_bookmark_notice_until=0;g_bookmarks.showing=FALSE;SetWindowTextW(g_updated,L"Normal footer");BookmarkFooterOverride();GetWindowTextW(g_updated,footer,256);assert(!wcscmp(footer,L"Normal footer"));
+    }
+    BookmarkClear();g_bookmark_notice_until=0;KillTimer(g_window,785);
+    g_tasks=previous;g_task_count=previous_count;g_russian=TRUE;SetWindowTextW(g_search,L"");RefreshTaskList();
+}
 int main(void){
+    g_show_all_tab=TRUE; /* This fixture tests bookmark navigation through All as well. */
     g_instance=GetModuleHandleW(NULL);g_jira_busy=TRUE;
     INITCOMMONCONTROLSEX controls={sizeof(controls),ICC_LISTVIEW_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&controls);
     WNDCLASSW cls={.lpfnWndProc=FixtureProcedure,.hInstance=g_instance,.lpszClassName=L"BookmarkUiFixture"};assert(RegisterClassW(&cls));
@@ -107,6 +220,8 @@ int main(void){
     };
     g_tasks=tasks;g_task_count=4;wcscpy_s(g_snapshot.account,256,L"fixture-user");wcscpy_s(g_snapshot.identity.account_id,256,L"fixture-user");wcscpy_s(g_snapshot.server,800,L"jira.example.test:443/jira");g_status_count=STATUS_COUNT;g_status_categories[STATUS_PROGRESS]=1;
     RefreshTaskList();assert(ListView_GetItemCount(g_list)==4);
+    saved_bookmark_row_markers();
+    bookmark_footer_counts();
     preserve_search_during_bookmark_actions();
     RECT icon=bounds(GetDlgItem(window,1046));click(1046);
     assert(ListView_GetItemCount(g_list)==4);RECT now=bounds(GetDlgItem(window,1046));assert(EqualRect(&icon,&now));

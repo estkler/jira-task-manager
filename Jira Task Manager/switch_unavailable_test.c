@@ -19,10 +19,13 @@ static BOOL SwitchTransport(JiraConnection *client,const wchar_t *method,const w
     (void)body;assert(wcscmp(method,L"POST"));if(!wcscmp(method,L"POST"))posts++;
     char json[1600];const char *response="{}";
     if(wcsstr(path,L"/myself")){
-        loads++;if(fail_reload&&loads>1){wcscpy_s(client->error,256,L"Fixture reload unavailable");return FALSE;}
+        loads++;
         response="{\"displayName\":\"Tester\",\"key\":\"self\"}";
+    }else if(wcsstr(path,L"?fields=status,assignee,reporter")){
+        snprintf(json,sizeof(json),"{\"key\":\"PDES-6487\",\"fields\":{\"status\":{\"id\":\"stage\",\"name\":\"%s\",\"statusCategory\":{\"key\":\"indeterminate\"}},\"assignee\":{\"key\":\"self\"},\"reporter\":null}}",fixture_stage);response=json;
     }else if(wcsstr(path,L"/search?")){
-        snprintf(json,sizeof(json),"{\"startAt\":0,\"total\":1,\"issues\":[{\"key\":\"PDES-6487\",\"fields\":{\"summary\":\"Managed workflow\",\"status\":{\"id\":\"stage\",\"name\":\"%s\",\"statusCategory\":{\"key\":\"indeterminate\"}}}}]}",fixture_stage);response=json;
+        if(fail_reload){wcscpy_s(client->error,256,L"Fixture reload unavailable");return FALSE;}
+        snprintf(json,sizeof(json),"{\"startAt\":0,\"total\":1,\"issues\":[{\"id\":\"6487\",\"key\":\"PDES-6487\",\"fields\":{\"updated\":\"2026-11-05T09:00:00.000+0300\",\"assignee\":{\"key\":\"self\"},\"reporter\":null,\"summary\":\"Managed workflow\",\"status\":{\"id\":\"stage\",\"name\":\"%s\",\"statusCategory\":{\"key\":\"indeterminate\"}}}}]}",fixture_stage);response=json;
     }else if(wcsstr(path,L"/transitions")){
         if(fail_transitions){wcscpy_s(client->error,256,L"Fixture network unavailable");return FALSE;}response="{\"transitions\":[]}";
     }else assert(0);

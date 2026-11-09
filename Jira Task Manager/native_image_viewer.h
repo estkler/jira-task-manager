@@ -79,7 +79,7 @@ static HWND OpenCommentImageViewer(NativeImage *image,const wchar_t *filename)
     int width=min(D(840),monitor.rcWork.right-monitor.rcWork.left-D(24)),height=min(D(600),monitor.rcWork.bottom-monitor.rcWork.top-D(24));
     int x=max(monitor.rcWork.left,min((owner.left+owner.right-width)/2,monitor.rcWork.right-width));
     int y=max(monitor.rcWork.top,min((owner.top+owner.bottom-height)/2,monitor.rcWork.bottom-height));
-    wchar_t title[320];swprintf(title,_countof(title),L"Jira Task Manager · %ls",state->filename);
+    wchar_t title[320];swprintf(title,_countof(title),APP_TITLE L" · %ls",state->filename);
     HWND window=CreateWindowExW(0,cls.lpszClassName,title,WS_OVERLAPPEDWINDOW,x,y,width,height,g_window,NULL,g_instance,state);
     if(!window){ImageViewerRelease(state);return NULL;}
     g_image_viewer=window;ApplyWindowCaptionTheme(window);ImageViewerStart(state);

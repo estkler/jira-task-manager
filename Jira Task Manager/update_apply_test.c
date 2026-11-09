@@ -74,6 +74,11 @@ static void test_apply_success(void){integration(FALSE,FALSE,FALSE,0,FALSE,FALSE
 static void test_apply_rollback(void){integration(TRUE,FALSE,FALSE,0,FALSE,FALSE);integration(FALSE,FALSE,FALSE,0,TRUE,FALSE);}
 static void test_apply_timeout(void){integration(FALSE,TRUE,FALSE,0,FALSE,FALSE);}
 int wmain(int argc,wchar_t **argv){
+    for(int ru=0;ru<2;ru++){
+        UpdateApplyFailure failure={.phase=UPDATE_APPLY_REPLACE,.windows_error=ERROR_ACCESS_DENIED,.original_available=TRUE};
+        wcscpy_s(failure.target,MAX_PATH,L"C:\\fixture\\Jira Task Manager.exe");wchar_t formatted[2048];
+        assert(UpdateFormatApplyFailure(&failure,ru,formatted,_countof(formatted))&&wcsstr(formatted,L"Jira Tasklet")&&wcsstr(formatted,failure.target));
+    }
     assert(argc==7);old_fixture=argv[1];new_fixture=argv[2];old_release.version=(UpdateVersion){0,9,29};new_release.version=(UpdateVersion){0,9,30};old_release.size=wcstoul(argv[5],NULL,10);new_release.size=wcstoul(argv[6],NULL,10);hash(argv[3],old_release.sha256);hash(argv[4],new_release.sha256);
     test_apply_identity();test_apply_success();test_apply_rollback();test_apply_timeout();integration(FALSE,FALSE,TRUE,0,FALSE,FALSE);integration(FALSE,FALSE,FALSE,1,FALSE,FALSE);integration(FALSE,FALSE,FALSE,2,FALSE,FALSE);integration(FALSE,FALSE,FALSE,0,FALSE,TRUE);
     fault_mode=1;integration(FALSE,FALSE,FALSE,0,FALSE,FALSE);fault_mode=2;integration(FALSE,FALSE,FALSE,0,FALSE,FALSE);fault_mode=0;

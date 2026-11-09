@@ -43,6 +43,7 @@ int main(void)
     JiraTransitionItem transition={0};wcscpy_s(transition.id,80,L"finish");wcscpy_s(transition.rating_field_id,80,L"rating");wcscpy_s(transition.status_id,80,L"done");wcscpy_s(transition.status_name,128,L"Done");transition.rating_count=6;transition.field_count=1;
     for(int i=0;i<6;i++){swprintf(transition.ratings[i].id,80,L"%d",i);for(int j=0;j<5;j++)transition.ratings[i].value[j]=j<i?L'★':L'☆';}
     TransitionInputDialog dialog;HWND popup=CreateTransitionInputWindow(&dialog,&transition,L"A-1",FALSE);assert(popup);
+    wchar_t completion_title[128];GetWindowTextW(popup,completion_title,128);assert(!wcscmp(completion_title,L"Jira Tasklet · Завершение задачи"));
     SendMessageW(popup,WM_COMMAND,MAKEWPARAM(IDC_TRANSITION_RATING+5,BN_CLICKED),0);
     COLORREF center;unsigned long long pressed=RatingPixels(&dialog,ODS_SELECTED,&center);
     assert(center==RGB(255,190,48)); /* Press feedback must not darken the selected gold. */
@@ -66,6 +67,7 @@ int main(void)
     assert(g_completion_editors&&!g_completion_editors->next);CompletionEditor *editor=g_completion_editors;popup=editor->dialog.window;
     SetWindowTextW(GetDlgItem(popup,IDC_TRANSITION_COMMENT),L"Preserve this draft");SendMessageW(popup,WM_COMMAND,MAKEWPARAM(IDC_TRANSITION_RATING+4,BN_CLICKED),0);
     WindowProcedure(g_window,WM_COMMAND,IDC_LANGUAGE,0);wchar_t caption[128];GetWindowTextW(GetDlgItem(popup,IDOK),caption,128);assert(!wcscmp(caption,L"Complete"));
+    GetWindowTextW(popup,completion_title,128);assert(!wcscmp(completion_title,L"Jira Tasklet · Complete task"));
     WindowProcedure(g_window,WM_COMMAND,IDC_THEME,0);WindowProcedure(g_window,WM_COMMAND,IDC_TAB_REPORTED,0);SetWindowTextW(g_search,L"another task");
     assert(IsWindow(popup)&&editor->dialog.selected_score==4&&!wcscmp(editor->dialog.key,L"A-1"));
     UINT original_dpi=editor->dialog.dpi;g_dpi=192;SendMessageW(popup,WM_MOUSEMOVE,0,MAKELPARAM(MulDiv(123,original_dpi,96),MulDiv(58,original_dpi,96)));

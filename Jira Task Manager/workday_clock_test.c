@@ -16,7 +16,12 @@ int main(void) {
     assert(WorkdayNormalizeStart(&now,&today,1));
     assert(!WorkdayNormalizeStart(&now,&yesterday,1));
     assert(WorkdayElapsedSeconds(3600,9000)==5400);
-    assert(WorkdayElapsedSeconds(3600,3600+10*3600)==9*3600);
+    assert(WorkdayElapsedSeconds(3600,3600+9*3600-1)==9*3600-1);
+    assert(WorkdayElapsedSeconds(3600,3600+9*3600)==9*3600);
+    assert(WorkdayElapsedSeconds(3600,3600+9*3600+1)==9*3600+1);
+    assert(WorkdayElapsedSeconds(3600,3600+9*3600+60)==9*3600+60);
+    assert(WorkdayElapsedSeconds(3600,3600+10*3600)==10*3600);
+    assert(WorkdayElapsedSeconds(0,3600)==0);
     assert(WorkdayElapsedSeconds(7200,3600)==0);
     puts("Workday clock tests passed");
 }

@@ -91,16 +91,15 @@ static void test_update_about_controls(HWND settings){
         for(int state=UPDATE_UI_IDLE;state<=UPDATE_UI_ERROR;state++){
             u_state=state;UpdateUiRender(settings);RECT client;GetClientRect(settings,&client);
             int ids[]={235,242,234,236,238};for(int i=0;i<5;i++){RECT bounds;GetWindowRect(GetDlgItem(settings,ids[i]),&bounds);MapWindowPoints(NULL,settings,(POINT*)&bounds,2);assert(bounds.left>=0&&bounds.right<=client.right&&bounds.top>=0&&bounds.bottom<=client.bottom-S(52));}
-            /* Measure with freshly scaled fonts, not the settings window's old DPI font. */
+            /* Tight native links and buttons size themselves to their actual control font. */
             HDC dc=GetDC(settings);
             for(int i=0;i<5;i++){
                 HWND control=GetDlgItem(settings,ids[i]);RECT bounds;GetClientRect(control,&bounds);
-                LOGFONTW font={0};GetObjectW(ids[i]==235?s_small:s_font,sizeof(font),&font);
-                font.lfHeight=-S(ids[i]==235?10:12);HFONT scaled=CreateFontIndirectW(&font);
-                HGDIOBJ old=SelectObject(dc,scaled);wchar_t caption[256];GetWindowTextW(control,caption,256);
-                if(ids[i]==242||ids[i]==234||ids[i]==238){SIZE size;GetTextExtentPoint32W(dc,caption,(int)wcslen(caption),&size);assert(size.cx<=bounds.right-S(20));assert(size.cy<=bounds.bottom);}
-                else{RECT text={0,0,bounds.right,0};DrawTextW(dc,caption,-1,&text,DT_CALCRECT|DT_WORDBREAK|DT_NOPREFIX);assert(text.bottom<=bounds.bottom);}
-                SelectObject(dc,old);DeleteObject(scaled);
+                HFONT actual_font=(HFONT)SendMessageW(control,WM_GETFONT,0,0);
+                HGDIOBJ old=SelectObject(dc,actual_font);wchar_t caption[256];GetWindowTextW(control,caption,256);
+                if(ids[i]==242||ids[i]==234||ids[i]==238){SIZE size;GetTextExtentPoint32W(dc,caption,(int)wcslen(caption),&size);assert(size.cx<=bounds.right-(ids[i]==242?S(20):0));assert(size.cy<=bounds.bottom);}
+                else{RECT text={0,0,bounds.right,0};DrawTextW(dc,caption,-1,&text,DT_CALCRECT|DT_WORDBREAK|DT_NOPREFIX);if(text.bottom>bounds.bottom)fprintf(stderr,"About control %d state%d dpi%d textheight%ld controlheight%ld\n",ids[i],state,dpi,text.bottom,bounds.bottom);assert(text.bottom<=bounds.bottom);}
+                SelectObject(dc,old);
             }
             ReleaseDC(settings,dc);
         }
@@ -165,11 +164,11 @@ static void test_install_blocks_drafts(HWND settings){
     u_state=UPDATE_UI_APPLYING;UpdateWork *result=fake_update(2,UPDATE_OK,u_generation);UpdateUiHandleMessage(WM_UPDATE_READY,0,(LPARAM)result);assert(!g_allow_close&&IsWindow(g_window));assert(GetWindowTextLengthW(input)==1);
     memset(&g_attached_popover,0,sizeof(g_attached_popover));TaskPopover first={0},second={0};first.window=panel;first.input=input;first.kind=1;second.next=&first;g_detached_popovers=&second;assert(!UpdateInstallAllowed(reason,256));
     SetWindowTextW(input,L"");first.kind=2;first.note_save_failed=TRUE;assert(!UpdateInstallAllowed(reason,256));first.note_save_failed=FALSE;assert(UpdateInstallAllowed(reason,256));g_detached_popovers=NULL;DestroyWindow(panel);
-    wchar_t url[768],interval[16];GetWindowTextW(s_url,url,768);GetWindowTextW(s_interval,interval,16);
+    wchar_t url[768];GetWindowTextW(s_url,url,768);int interval=(int)SendMessageW(s_interval,TBM_GETPOS,0,0);
     SetWindowTextW(s_url,L"https://different.example.test");assert(!UpdateInstallAllowed(reason,256));SetWindowTextW(s_url,url);
     SetWindowTextW(s_token,L" ");assert(!UpdateInstallAllowed(reason,256));SetWindowTextW(s_token,L"");
-    SetWindowTextW(s_interval,L"31");assert(!UpdateInstallAllowed(reason,256));SetWindowTextW(s_interval,interval);test_install_clean();u_state=UPDATE_UI_IDLE;UpdateUiRender(settings);
-    wchar_t tray[16];GetWindowTextW(GetDlgItem(settings,213),tray,16);SetWindowTextW(GetDlgItem(settings,213),L"0");assert(!UpdateInstallAllowed(reason,256));SetWindowTextW(GetDlgItem(settings,213),tray);
+    SendMessageW(s_interval,TBM_SETPOS,TRUE,interval==45?40:interval+5);assert(!UpdateInstallAllowed(reason,256));SendMessageW(s_interval,TBM_SETPOS,TRUE,interval);test_install_clean();u_state=UPDATE_UI_IDLE;UpdateUiRender(settings);
+    int tray=(int)SendMessageW(GetDlgItem(settings,213),TBM_GETPOS,0,0);SendMessageW(GetDlgItem(settings,213),TBM_SETPOS,TRUE,tray==30?29:tray+1);assert(!UpdateInstallAllowed(reason,256));SendMessageW(GetDlgItem(settings,213),TBM_SETPOS,TRUE,tray);
     BOOL startup=SendMessageW(GetDlgItem(settings,214),BM_GETCHECK,0,0)==BST_CHECKED;SendMessageW(GetDlgItem(settings,214),BM_SETCHECK,startup?BST_UNCHECKED:BST_CHECKED,0);assert(!UpdateInstallAllowed(reason,256));SendMessageW(GetDlgItem(settings,214),BM_SETCHECK,startup?BST_CHECKED:BST_UNCHECKED,0);test_install_clean();
 }
 static wchar_t captured_comment_action[256];
@@ -211,6 +210,7 @@ static COLORREF TransitionStarCenter(TransitionInputDialog *dialog,int score){
     SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);ReleaseDC(button,target);return pixel;
 }
 int main(void) {
+    g_show_all_tab=TRUE; /* This fixture exercises the explicitly enabled three-tab layout. */
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     OpenPortal();
     assert(!wcscmp(opened_file,L"https://portal.kama.gs/company/building_access.php"));
@@ -264,6 +264,12 @@ int main(void) {
         HDC dc=GetDC(g_window);SelectObject(dc,g_small_font);SIZE size;
         GetTextExtentPoint32W(dc,text,(int)wcslen(text),&size);ReleaseDC(g_window,dc);
         RECT rect;GetClientRect(g_updated,&rect);
+        if(rect.right<size.cx){
+            RECT timer,updated,refresh;GetWindowRect(g_timer,&timer);GetWindowRect(g_updated,&updated);GetWindowRect(g_refresh,&refresh);
+            HDC measure=GetDC(g_window);HGDIOBJ saved=SelectObject(measure,g_timer_font);SIZE old_timer;wchar_t timer_label[96];GetWindowTextW(g_timer,timer_label,96);GetTextExtentPoint32W(measure,timer_label,(int)wcslen(timer_label),&old_timer);
+            fprintf(stderr,"Footer diagnostics dpi=%u density=%d layout=510px: timerRect=%ld..%ld updatedRect=%ld..%ld refreshLeft=%ld requiredUpdated=%ld reservedTimer=%d oldTimerText=%ld\n",g_dpi,g_density,timer.left,timer.right,updated.left,updated.right,refresh.left,size.cx,TimerReservedWidth(measure),old_timer.cx);
+            SelectObject(measure,saved);ReleaseDC(g_window,measure);
+        }
         assert(rect.right>=size.cx);
         assert(wcsstr(text,L"16:35:46")!=NULL);
         LayoutControls(MulDiv(510,(int)g_dpi,96),550);
@@ -329,7 +335,7 @@ int main(void) {
     /* Settings typography must not grow/shrink with the task-list density. */
     LOGFONTW settings_font={0};GetObjectW((HFONT)SendMessageW(s_url,WM_GETFONT,0,0),sizeof(settings_font),&settings_font);
     assert(settings_font.lfHeight==-18); /* 12 DIP at 144 DPI, Legacy's size */
-    assert(GetDlgItem(settings,213)); /* tray count: a real editable preference */
+    assert(GetDlgItem(settings,213)); /* tray count: a real bounded preference */
     assert(GetDlgItem(settings,214)); /* startup: a real checkbox */
     TaskItem fixture[]={{L"T-2",L"Zulu active task with a very long name",0,TRUE,NULL,L"Важная локальная заметка"},{L"T-10",L"Alpha",1,FALSE},{L"T-1",L"Beta",0,FALSE}};
     assert(IndicatorFillColor(FALSE)!=IndicatorFillColor(TRUE));
@@ -562,7 +568,7 @@ int main(void) {
     assert(NoteIndicatorRectForRow(0,&note_indicator));
     OpenTaskPopover(noted_task,2,note_indicator);
     assert(g_popover.window&&g_popover.kind==2&&g_popover.input);
-    assert(GetWindowLongPtrW(g_popover.input,GWL_STYLE)&WS_VSCROLL);
+    assert(!(GetWindowLongPtrW(g_popover.input,GWL_STYLE)&WS_VSCROLL)); /* Short notes do not reserve an unnecessary scrollbar. */
     RECT unused_dock_area={g_popover.body_right-D(69),D(3),g_popover.body_right-D(38),D(32)};
     SendMessageW(g_popover.window,WM_LBUTTONUP,0,
         MAKELPARAM((unused_dock_area.left+unused_dock_area.right)/2,(unused_dock_area.top+unused_dock_area.bottom)/2));
@@ -718,8 +724,8 @@ int main(void) {
     RECT updated_bounds={0,0,100,28},updated_text=UpdatedTextRect(updated_bounds);
     assert(updated_text.right==100-D(3));
     free(fixture[0].local_note);g_tasks=NULL;g_task_count=0;
-    SetWindowTextW(s_interval,L"0");BeginAccountCheck();assert(!s_busy);
-    SetWindowTextW(s_interval,L"15");SetWindowTextW(s_url,L"http://invalid.example");BeginAccountCheck();assert(!s_busy);
+    SendMessageW(GetDlgItem(settings,213),TBM_SETPOS,TRUE,0);assert(SendMessageW(GetDlgItem(settings,213),TBM_GETPOS,0,0)==1);SendMessageW(GetDlgItem(settings,213),TBM_SETPOS,TRUE,10);
+    SendMessageW(s_interval,TBM_SETPOS,TRUE,15);SetWindowTextW(s_url,L"http://invalid.example");BeginAccountCheck();assert(!s_busy);
     s_connected=TRUE;LayoutSettings();assert(!(GetWindowLongPtrW(s_token,GWL_STYLE)&WS_VISIBLE));
     /* Signing out must rebuild the disconnected form atomically: keep the valid
        server URL, clear only the secret and leave no pending half-painted layout. */
@@ -735,11 +741,13 @@ int main(void) {
     assert(!GetUpdateRect(settings,NULL,FALSE));
     SetWindowTextW(s_url,L"https://different-account.example.test");SetWindowTextW(s_token,L"");BeginAccountCheck();assert(!s_busy);
     assert(GetWindowLongPtrW(s_token,GWL_STYLE)&WS_VISIBLE); /* New server must expose token input, not reuse hidden credentials. */
-    for(int p=0;p<2;p++)for(int i=0;i<s_counts[p];i++){
+    for(int p=0;p<4;p++)for(int i=0;i<s_counts[p];i++){
         LONG_PTR style=GetWindowLongPtrW(s_pages[p][i],GWL_STYLE);
         assert(!(style&(WS_VSCROLL|WS_HSCROLL)));
     }
-    assert(SETTINGS_HEIGHT_DIP<=395);
+    RECT done_preference,note_bounds,save_bounds;
+    assert(GetWindowRect(GetDlgItem(settings,246),&done_preference)&&GetWindowRect(s_note,&note_bounds)&&GetWindowRect(GetDlgItem(settings,IDOK),&save_bounds));
+    assert(done_preference.bottom<=note_bounds.top&&note_bounds.bottom<save_bounds.top); /* The added row fits without a scrollable settings form. */
     assert(GetDlgItem(settings,200)&&GetDlgItem(settings,201));
     assert(GetDlgItem(settings,202)&&!GetDlgItem(settings,220));
     wchar_t about_tab[64];GetWindowTextW(GetDlgItem(settings,201),about_tab,64);
@@ -749,7 +757,7 @@ int main(void) {
     GetWindowTextW(GetDlgItem(settings,201),about_tab,64);assert(!wcscmp(about_tab,L"About"));
     wchar_t settings_label[96];GetWindowTextW(GetDlgItem(settings,221),settings_label,96);
     assert(!wcscmp(settings_label,L"Update interval, min"));
-    GetWindowTextW(settings,settings_label,96);assert(!wcscmp(settings_label,L"Jira Task Manager · Settings"));
+    GetWindowTextW(settings,settings_label,96);assert(!wcscmp(settings_label,L"Jira Tasklet · Settings"));
     DestroyWindow(settings);
     /* Opening settings must return immediately, leaving both windows usable. */
     SetTimer(g_window,42,20,CloseModalRegression);
@@ -757,7 +765,7 @@ int main(void) {
     KillTimer(g_window,42);
     assert(s_window&&IsWindow(s_window)&&IsWindowEnabled(g_window));
     HWND first=s_window;OpenSettingsWindow();assert(s_window==first);
-    SetWindowTextW(s_interval,L"25");
+    SendMessageW(s_interval,TBM_SETPOS,TRUE,25);
     g_jira_busy=TRUE;BeginAccountCheck();assert(!s_busy&&!s_thread);
     g_jira_busy=FALSE;
     DestroyWindow(s_window);

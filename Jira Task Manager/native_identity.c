@@ -63,7 +63,7 @@ static BOOL CreateStartupShortcut(const wchar_t *shortcut_path,const wchar_t *ex
     HRESULT result=CoCreateInstance(&CLSID_ShellLink,NULL,CLSCTX_INPROC_SERVER,&IID_IShellLinkW,(void**)&link);
     if(SUCCEEDED(result))result=IShellLinkW_SetPath(link,executable_path);
     if(SUCCEEDED(result))result=IShellLinkW_SetArguments(link,L"--startup");
-    if(SUCCEEDED(result))result=IShellLinkW_SetDescription(link,L"Jira Task Manager — Jira tasks");
+    if(SUCCEEDED(result))result=IShellLinkW_SetDescription(link,TASK_MANAGER_TITLE L" — Jira tasks");
     wchar_t working[MAX_PATH];wcscpy_s(working,MAX_PATH,executable_path);
     if(SUCCEEDED(result)&&RemoveLastComponent(working))result=IShellLinkW_SetWorkingDirectory(link,working);
     if(SUCCEEDED(result))result=IShellLinkW_QueryInterface(link,&IID_IPersistFile,(void**)&persist);
@@ -90,16 +90,101 @@ static BOOL LoadStartupTarget(const wchar_t *shortcut_path,wchar_t *target,size_
 BOOL TaskManagerSetStartupAt(const wchar_t *startup_folder,const wchar_t *executable_path,BOOL enabled)
 {
     wchar_t shortcut[MAX_PATH];if(!ShortcutPath(startup_folder,shortcut,MAX_PATH))return FALSE;
-    if(!enabled)return DeleteFileW(shortcut)||GetLastError()==ERROR_FILE_NOT_FOUND;
-    return executable_path&&executable_path[0]&&CreateStartupShortcut(shortcut,executable_path)&&TaskManagerStartupEnabledAt(startup_folder,executable_path);
+    if(!executable_path||!executable_path[0])return FALSE;
+    if(enabled){
+        if(!TaskManagerMigrateShortcutAt(startup_folder,executable_path))return FALSE;
+        if(GetFileAttributesW(shortcut)!=INVALID_FILE_ATTRIBUTES){
+            wchar_t target[MAX_PATH],arguments[64];
+            return LoadStartupTarget(shortcut,target,MAX_PATH,arguments,64)&&!wcsicmp(target,executable_path)&&!wcscmp(arguments,L"--startup");
+        }
+        return CreateStartupShortcut(shortcut,executable_path)&&TaskManagerStartupEnabledAt(startup_folder,executable_path);
+    }
+    const wchar_t *names[]={TASK_MANAGER_STARTUP_LINK,TASK_MANAGER_LEGACY_LINK};BOOL ok=TRUE;
+    for(int i=0;i<2;i++){
+        wchar_t target[MAX_PATH],arguments[64];
+        if(!JoinPath(shortcut,MAX_PATH,startup_folder,names[i]))return FALSE;
+        if(GetFileAttributesW(shortcut)==INVALID_FILE_ATTRIBUTES)continue;
+        if(!LoadStartupTarget(shortcut,target,MAX_PATH,arguments,64)){ok=FALSE;continue;}
+        if(!wcsicmp(target,executable_path)&&!wcscmp(arguments,L"--startup")&&!DeleteFileW(shortcut))ok=FALSE;
+    }
+    return ok;
 }
 
 BOOL TaskManagerStartupEnabledAt(const wchar_t *startup_folder,const wchar_t *executable_path)
 {
     wchar_t shortcut[MAX_PATH],target[MAX_PATH],arguments[64];
-    if(!executable_path||!ShortcutPath(startup_folder,shortcut,MAX_PATH)||
-       !LoadStartupTarget(shortcut,target,MAX_PATH,arguments,64))return FALSE;
-    return !wcsicmp(target,executable_path)&&!wcscmp(arguments,L"--startup");
+    if(!executable_path||!startup_folder)return FALSE;
+    const wchar_t *names[]={TASK_MANAGER_STARTUP_LINK,TASK_MANAGER_LEGACY_LINK};
+    for(int i=0;i<2;i++)if(JoinPath(shortcut,MAX_PATH,startup_folder,names[i])&&
+       LoadStartupTarget(shortcut,target,MAX_PATH,arguments,64)&&!wcsicmp(target,executable_path)&&!wcscmp(arguments,L"--startup"))return TRUE;
+    return FALSE;
+}
+
+static BOOL StageShortcutApproval(HKEY approval,BOOL *created)
+{
+    *created=FALSE;if(!approval)return TRUE;
+    BYTE old_value[1024],new_value[1024];DWORD old_type=0,new_type=0,old_size=sizeof(old_value),new_size=sizeof(new_value);
+    LSTATUS old_status=RegQueryValueExW(approval,TASK_MANAGER_LEGACY_LINK,NULL,&old_type,old_value,&old_size);
+    LSTATUS new_status=RegQueryValueExW(approval,TASK_MANAGER_STARTUP_LINK,NULL,&new_type,new_value,&new_size);
+    if(old_status==ERROR_FILE_NOT_FOUND)return new_status==ERROR_FILE_NOT_FOUND;
+    if(old_status!=ERROR_SUCCESS||old_type!=REG_BINARY||!old_size)return FALSE;
+    if(new_status==ERROR_SUCCESS)return new_type==old_type&&new_size==old_size&&!memcmp(old_value,new_value,old_size);
+    if(new_status!=ERROR_FILE_NOT_FOUND)return FALSE;
+    if(RegSetValueExW(approval,TASK_MANAGER_STARTUP_LINK,0,old_type,old_value,old_size)!=ERROR_SUCCESS)return FALSE;
+    *created=TRUE;return TRUE;
+}
+
+BOOL TaskManagerMigrateShortcutWithApprovalAt(const wchar_t *folder,const wchar_t *executable_path,HKEY approval)
+{
+    wchar_t old_path[MAX_PATH],new_path[MAX_PATH],target[MAX_PATH],arguments[32768];
+    if(!folder||!executable_path||!executable_path[0]||
+       !JoinPath(old_path,MAX_PATH,folder,TASK_MANAGER_LEGACY_LINK)||!JoinPath(new_path,MAX_PATH,folder,TASK_MANAGER_STARTUP_LINK))return FALSE;
+    if(GetFileAttributesW(old_path)==INVALID_FILE_ATTRIBUTES)return GetLastError()==ERROR_FILE_NOT_FOUND||GetLastError()==ERROR_PATH_NOT_FOUND;
+    if(!LoadStartupTarget(old_path,target,MAX_PATH,arguments,_countof(arguments)))return FALSE;
+    if(wcsicmp(target,executable_path))return TRUE; /* A different installation or application owns this name. */
+    if(GetFileAttributesW(new_path)!=INVALID_FILE_ATTRIBUTES)return FALSE;
+    HRESULT initialized=CoInitializeEx(NULL,COINIT_APARTMENTTHREADED);BOOL uninitialize=SUCCEEDED(initialized);
+    if(FAILED(initialized)&&initialized!=RPC_E_CHANGED_MODE)return FALSE;
+    IShellLinkW *link=NULL;IPersistFile *persist=NULL;wchar_t temporary[MAX_PATH]=L"";
+    HRESULT hr=CoCreateInstance(&CLSID_ShellLink,NULL,CLSCTX_INPROC_SERVER,&IID_IShellLinkW,(void**)&link);
+    if(SUCCEEDED(hr))hr=IShellLinkW_QueryInterface(link,&IID_IPersistFile,(void**)&persist);
+    if(SUCCEEDED(hr))hr=IPersistFile_Load(persist,old_path,STGM_READ);
+    if(SUCCEEDED(hr))hr=IShellLinkW_SetDescription(link,TASK_MANAGER_TITLE L" — Jira tasks");
+    if(SUCCEEDED(hr)&&!GetTempFileNameW(folder,L"jtl",0,temporary))hr=HRESULT_FROM_WIN32(GetLastError());
+    if(SUCCEEDED(hr))hr=IPersistFile_Save(persist,temporary,TRUE);
+    if(persist)IPersistFile_Release(persist);if(link)IShellLinkW_Release(link);
+    /* StartupApproved is keyed by filename. Transfer the exact bytes before
+       publishing the new link; unknown/colliding approval leaves the old one. */
+    BOOL approval_created=FALSE;
+    BOOL ok=SUCCEEDED(hr)&&StageShortcutApproval(approval,&approval_created)&&MoveFileExW(temporary,new_path,MOVEFILE_WRITE_THROUGH);
+    if(temporary[0])DeleteFileW(temporary);
+    if(ok&&!DeleteFileW(old_path)){DeleteFileW(new_path);ok=FALSE;}
+    if(!ok&&approval_created)RegDeleteValueW(approval,TASK_MANAGER_STARTUP_LINK);
+    if(uninitialize)CoUninitialize();
+    if(ok)SHChangeNotify(SHCNE_RENAMEITEM,SHCNF_PATHW,old_path,new_path);
+    return ok;
+}
+
+BOOL TaskManagerMigrateShortcutAt(const wchar_t *folder,const wchar_t *executable_path)
+{
+    return TaskManagerMigrateShortcutWithApprovalAt(folder,executable_path,NULL);
+}
+
+BOOL TaskManagerMigrateShellLinks(void)
+{
+    wchar_t executable[MAX_PATH],folder[MAX_PATH];DWORD length=GetModuleFileNameW(NULL,executable,MAX_PATH);
+    if(!length||length>=MAX_PATH)return FALSE;
+    const int folders[]={CSIDL_STARTUP,CSIDL_DESKTOPDIRECTORY,CSIDL_PROGRAMS};BOOL ok=TRUE;
+    for(int i=0;i<_countof(folders);i++){
+        if(FAILED(SHGetFolderPathW(NULL,folders[i],NULL,SHGFP_TYPE_CURRENT,folder))){ok=FALSE;continue;}
+        if(folders[i]==CSIDL_STARTUP){
+            HKEY approval=NULL;LSTATUS status=RegOpenKeyExW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder",0,KEY_QUERY_VALUE|KEY_SET_VALUE,&approval);
+            if(status!=ERROR_SUCCESS&&status!=ERROR_FILE_NOT_FOUND){ok=FALSE;continue;}
+            if(!TaskManagerMigrateShortcutWithApprovalAt(folder,executable,approval))ok=FALSE;
+            if(approval)RegCloseKey(approval);
+        }else if(!TaskManagerMigrateShortcutAt(folder,executable))ok=FALSE;
+    }
+    return ok;
 }
 
 static BOOL StartupContext(wchar_t *startup,wchar_t *executable)

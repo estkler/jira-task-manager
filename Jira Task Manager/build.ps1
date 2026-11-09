@@ -8,6 +8,9 @@ $projectDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $workspaceDirectory = Split-Path -Parent $projectDirectory
 $compilerDirectory = Join-Path $workspaceDirectory '.tools\zig-x86_64-windows-0.16.0'
 $compiler = Join-Path $compilerDirectory 'zig.exe'
+if (-not (Test-Path -LiteralPath $compiler)) {
+    $compiler = [IO.Path]::GetFullPath((Join-Path $workspaceDirectory '..\..\.tools\zig-x86_64-windows-0.16.0\zig.exe'))
+}
 $outputDirectory = Join-Path $projectDirectory 'bin'
 $globalCache = Join-Path $workspaceDirectory '.zig-cache-global'
 $localCache = Join-Path $workspaceDirectory '.zig-cache-local'
@@ -28,7 +31,7 @@ try {
     & $compiler cc -Os -fno-exceptions -fno-rtti -c 'native_svg.cpp' -o 'bin\native_svg.o'
     if ($LASTEXITCODE -ne 0) { throw 'OS-native SVG compilation failed.' }
 
-    & $compiler cc -target x86_64-windows-gnu -Os -s -municode 'native.c' 'native_jira.c' 'native_images.c' 'native_avatar_cache.c' 'bin\native_svg.o' 'native_notes.c' 'native_new_tasks.c' 'native_bookmarks.c' 'native_lifecycle.c' 'native_identity.c' 'native_update_model.c' 'native_update_http.c' 'native_update_files.c' 'native_update_apply.c' 'bin\app.res' `
+    & $compiler cc -target x86_64-windows-gnu -Os -s -municode 'native.c' 'native_jira.c' 'native_jira_cache.c' 'native_images.c' 'native_avatar_cache.c' 'bin\native_svg.o' 'native_notes.c' 'native_new_tasks.c' 'native_bookmarks.c' 'native_lifecycle.c' 'native_identity.c' 'native_update_model.c' 'native_update_http.c' 'native_update_files.c' 'native_update_apply.c' 'bin\app.res' `
         -o (Join-Path 'bin' $OutputName) `
         '-Wl,--subsystem,windows' `
         -lcomctl32 -ldwmapi -lgdi32 -lshell32 -lshlwapi -luxtheme -lwinhttp -ladvapi32 -lcrypt32 -lbcrypt -lwtsapi32 -lole32 -luuid -ld2d1 -ld3d11 -ldxgi -lxmllite

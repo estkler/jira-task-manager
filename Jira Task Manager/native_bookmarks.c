@@ -41,17 +41,18 @@ BOOL NativeBookmarksSet(NativeBookmarks *m,const wchar_t *key,BOOL selected){
 BOOL NativeBookmarksDirty(const NativeBookmarks *m){return m&&m->editing&&(m->saved.count!=m->draft.count||(m->saved.count&&memcmp(m->saved.keys,m->draft.keys,(size_t)m->saved.count*sizeof(*m->saved.keys))));}
 int NativeBookmarksCount(const NativeBookmarks *m){return m?current_set(m)->count:0;}
 static ULONGLONG hash_bytes(const void *data,size_t size){ULONGLONG hash=1469598103934665603ULL;const BYTE *bytes=data;for(size_t i=0;i<size;i++){hash^=bytes[i];hash*=1099511628211ULL;}return hash;}
-static BOOL storage_path(const wchar_t *settings,const wchar_t *server,const wchar_t *account,wchar_t path[MAX_PATH],wchar_t directory[MAX_PATH]){
+static BOOL storage_path(const wchar_t *settings,const wchar_t *server,const wchar_t *account,NativeTaskMarkStore store,wchar_t path[MAX_PATH],wchar_t directory[MAX_PATH]){
     if(!settings||!server||!*server||!account||!*account)return FALSE;
+    if(store!=TASK_MARK_BOOKMARKS&&store!=TASK_MARK_DIMMED)return FALSE;
     const wchar_t *slash=wcsrchr(settings,L'\\'),*forward=wcsrchr(settings,L'/');if(forward&&(!slash||forward>slash))slash=forward;
     if(!slash||slash-settings>=MAX_PATH-50)return FALSE;size_t length=(size_t)(slash-settings);wmemcpy(directory,settings,length);directory[length]=0;
     ULONGLONG hash=1469598103934665603ULL;const wchar_t *parts[]={server,L"\n",account};
     for(int p=0;p<3;p++)for(const wchar_t *at=parts[p];*at;at++){hash^=(unsigned short)*at;hash*=1099511628211ULL;}
-    return swprintf(path,MAX_PATH,L"%ls\\bookmarks-%016llx.dat",directory,(unsigned long long)hash)>0;
+    return swprintf(path,MAX_PATH,L"%ls\\%ls-%016llx.dat",directory,store==TASK_MARK_DIMMED?L"dimmed":L"bookmarks",(unsigned long long)hash)>0;
 }
 typedef struct BookmarkFileHeader {DWORD magic,version,count,reserved;ULONGLONG checksum;} BookmarkFileHeader;
-static BOOL save_set(const BookmarkKeySet *set,const wchar_t *settings,const wchar_t *server,const wchar_t *account){
-    wchar_t path[MAX_PATH],directory[MAX_PATH],temp[MAX_PATH];if(!storage_path(settings,server,account,path,directory))return FALSE;
+static BOOL save_set(const BookmarkKeySet *set,const wchar_t *settings,const wchar_t *server,const wchar_t *account,NativeTaskMarkStore store){
+    wchar_t path[MAX_PATH],directory[MAX_PATH],temp[MAX_PATH];if(!storage_path(settings,server,account,store,path,directory))return FALSE;
     if(!GetTempFileNameW(directory,L"bmk",0,temp))return FALSE;
     HANDLE file=CreateFileW(temp,GENERIC_WRITE,0,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL|FILE_FLAG_WRITE_THROUGH,NULL);
     BOOL ok=file!=INVALID_HANDLE_VALUE;DWORD wrote=0;size_t bytes=(size_t)set->count*sizeof(*set->keys);
@@ -62,8 +63,8 @@ static BOOL save_set(const BookmarkKeySet *set,const wchar_t *settings,const wch
     if(ok){ok=MoveFileExW(temp,path,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH);error=GetLastError();}
     if(!ok){DeleteFileW(temp);SetLastError(error);}return ok;
 }
-BOOL NativeBookmarksLoad(NativeBookmarks *m,const wchar_t *settings,const wchar_t *server,const wchar_t *account){
-    wchar_t path[MAX_PATH],directory[MAX_PATH];if(!m||!storage_path(settings,server,account,path,directory))return FALSE;
+BOOL NativeTaskMarksLoad(NativeBookmarks *m,const wchar_t *settings,const wchar_t *server,const wchar_t *account,NativeTaskMarkStore store){
+    wchar_t path[MAX_PATH],directory[MAX_PATH];if(!m||!storage_path(settings,server,account,store,path,directory))return FALSE;
     HANDLE file=CreateFileW(path,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
     if(file==INVALID_HANDLE_VALUE){if(GetLastError()!=ERROR_FILE_NOT_FOUND)return FALSE;NativeBookmarksFree(m);return TRUE;}
     BookmarkFileHeader header={0};LARGE_INTEGER length;DWORD got=0;BookmarkKeySet set={0};
@@ -76,10 +77,12 @@ BOOL NativeBookmarksLoad(NativeBookmarks *m,const wchar_t *settings,const wchar_
     if(!ok){free(set.keys);SetLastError(ERROR_INVALID_DATA);return FALSE;}
     set.count=set.capacity=(int)header.count;NativeBookmarksFree(m);m->saved=set;return TRUE;
 }
-BOOL NativeBookmarksCommit(NativeBookmarks *m,const wchar_t *settings,const wchar_t *server,const wchar_t *account){
-    if(!m||!m->editing||!save_set(&m->draft,settings,server,account))return FALSE;
+BOOL NativeTaskMarksCommit(NativeBookmarks *m,const wchar_t *settings,const wchar_t *server,const wchar_t *account,NativeTaskMarkStore store){
+    if(!m||!m->editing||!save_set(&m->draft,settings,server,account,store))return FALSE;
     free(m->saved.keys);m->saved=m->draft;memset(&m->draft,0,sizeof(m->draft));m->editing=FALSE;m->showing=m->saved.count>0;return TRUE;
 }
 BOOL NativeBookmarksClear(NativeBookmarks *m,const wchar_t *settings,const wchar_t *server,const wchar_t *account){
-    BookmarkKeySet empty={0};if(!m||!save_set(&empty,settings,server,account))return FALSE;NativeBookmarksFree(m);return TRUE;
+    BookmarkKeySet empty={0};if(!m||!save_set(&empty,settings,server,account,TASK_MARK_BOOKMARKS))return FALSE;NativeBookmarksFree(m);return TRUE;
 }
+BOOL NativeBookmarksLoad(NativeBookmarks *m,const wchar_t *settings,const wchar_t *server,const wchar_t *account){return NativeTaskMarksLoad(m,settings,server,account,TASK_MARK_BOOKMARKS);}
+BOOL NativeBookmarksCommit(NativeBookmarks *m,const wchar_t *settings,const wchar_t *server,const wchar_t *account){return NativeTaskMarksCommit(m,settings,server,account,TASK_MARK_BOOKMARKS);}

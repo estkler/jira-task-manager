@@ -65,7 +65,12 @@ static void BookmarkFooterOverride(void){
     else if(g_bookmarks.editing)swprintf(label,256,NativeBookmarksDirty(&g_bookmarks)?
         (g_russian?L"Выбрано: %d · \u2713 сохранить · Esc — отменить":L"Selected: %d · \u2713 save · Esc — cancel"):
         (g_russian?L"Выбрано: %d · Enter — завершить · Esc — отменить":L"Selected: %d · Enter — finish · Esc — cancel"),count);
-    else if(g_bookmarks.showing)swprintf(label,256,g_russian?L"Закладки: %d · показано %d":L"Bookmarks: %d · shown %d",count,ListView_GetItemCount(g_list));
+    else if(g_bookmarks.showing){
+        int shown=ListView_GetItemCount(g_list);
+        if(shown==count)swprintf(label,256,g_russian?L"Закладки: %d":L"Bookmarks: %d",count);
+        else if(g_russian)swprintf(label,256,L"Показано %d из %d %ls",shown,count,count%10==1&&count%100!=11?L"закладки":L"закладок");
+        else swprintf(label,256,L"Showing %d of %d %ls",shown,count,count==1?L"bookmark":L"bookmarks");
+    }
     else return;
     BookmarkSetText(g_updated,label);
 }

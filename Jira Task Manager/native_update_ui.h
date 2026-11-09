@@ -23,6 +23,7 @@ static CRITICAL_SECTION u_post_lock;
 static BOOL UpdateSettingsDirty(void);
 static BOOL UpdateSettingsAccountBusy(void);
 static void UpdateUiRender(HWND settings);
+static void LayoutSettings(void);
 static BOOL UpdateInstallAllowed(wchar_t *reason,size_t capacity);
 static BOOL UpdatePopoverDirty(TaskPopover *p){return p&&p->window&&(p->sending||p->note_save_failed||(p->kind==1&&p->input&&GetWindowTextLengthW(p->input)>0));}
 static BOOL UpdateInstallAllowed(wchar_t *reason,size_t capacity){
@@ -106,7 +107,7 @@ static void UpdateUiBeginDownload(HWND settings){
 static void UpdateUiBeginInstall(HWND settings){
     if(u_state!=UPDATE_UI_READY||u_work||u_handoff)return;
     if(!UpdateInstallAllowed(u_reason,_countof(u_reason))){UpdateUiRender(settings);return;}
-    wchar_t text[256];swprintf(text,_countof(text),g_russian?L"Обновить Jira Task Manager %ls до %lu.%lu.%lu и перезапустить?":L"Update Jira Task Manager %ls to %lu.%lu.%lu and restart?",APP_VERSION,u_release.version.major,u_release.version.minor,u_release.version.patch);
+    wchar_t text[256];swprintf(text,_countof(text),g_russian?L"Обновить " APP_TITLE L" %ls до %lu.%lu.%lu и перезапустить?":L"Update " APP_TITLE L" %ls to %lu.%lu.%lu and restart?",APP_VERSION,u_release.version.major,u_release.version.minor,u_release.version.patch);
     if(MessageBoxW(settings,text,APP_TITLE,MB_YESNO|MB_ICONQUESTION)!=IDYES)return;
     if(!UpdateInstallAllowed(u_reason,_countof(u_reason))){UpdateUiRender(settings);return;}
     UpdateApplyRequest request={0};request.parent_pid=GetCurrentProcessId();request.release=u_release;FILETIME c,e,k,t;
@@ -164,4 +165,5 @@ static void UpdateUiRender(HWND settings){
     default:wcscpy_s(status,256,g_russian?L"Обновления через GitHub Releases":L"Updates via GitHub Releases");break;
     }
     wcscpy_s(button,128,label);SetWindowTextW(GetDlgItem(settings,235),status);SetWindowTextW(GetDlgItem(settings,242),button);EnableWindow(GetDlgItem(settings,242),!UpdateUiBusy()&&!UpdateSettingsAccountBusy());
+    LayoutSettings();
 }

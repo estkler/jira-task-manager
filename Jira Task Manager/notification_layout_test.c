@@ -29,11 +29,11 @@ int main(void)
     WNDCLASSW wc={.lpfnWndProc=SettingsProcedure,.hInstance=g_instance,.lpszClassName=L"NotificationLayoutFixture"};assert(RegisterClassW(&wc));
     for(int dpi=96;dpi<=192;dpi+=48)for(int ru=0;ru<2;ru++)for(int dark=1;dark>=0;dark--){
         g_dpi=dpi;g_russian=ru;g_dark=dark;RecreateBrushes();HWND settings=CreateWindowW(wc.lpszClassName,L"",WS_POPUP,30000,30000,S(430),S(360),g_window,NULL,g_instance,NULL);assert(settings);
-        assert(checkbox_caption_readable(SettingsItem(214)));assert(checkbox_caption_readable(SettingsItem(224)));
+        SettingsTab(3);assert(checkbox_caption_readable(SettingsItem(214)));assert(checkbox_caption_readable(SettingsItem(224)));assert(checkbox_caption_readable(SettingsItem(225)));assert(checkbox_caption_readable(SettingsItem(246)));
         SettingsTab(2);
         assert(checkbox_caption_readable(SettingsItem(250)));assert(checkbox_caption_readable(SettingsItem(251)));assert(checkbox_caption_readable(SettingsItem(261)));
         WindowProcedure(g_window,WM_COMMAND,IDC_THEME,0);
-        const int checkbox_ids[]={214,224,250,251,261};
+        const int checkbox_ids[]={214,224,225,246,250,251,261};
         for(int i=0;i<_countof(checkbox_ids);i++)assert(checkbox_caption_readable(SettingsItem(checkbox_ids[i])));
         assert(!SettingsItem(254)); /* Removed explanatory caption must not reserve a row. */
         RECT check=relative_rect(SettingsItem(261),s_notifications),label=relative_rect(SettingsItem(256),s_notifications);

@@ -67,8 +67,91 @@ static BOOL ReadShortcut(const wchar_t *path,wchar_t *target,size_t target_capac
     if(persist)IPersistFile_Release(persist);if(link)IShellLinkW_Release(link);return SUCCEEDED(hr);
 }
 
+/* Real Shell links pin ownership, preserved launch behavior, and collisions. */
+extern BOOL TaskManagerMigrateShortcutAt(const wchar_t *folder,const wchar_t *executable_path);
+extern BOOL TaskManagerMigrateShortcutWithApprovalAt(const wchar_t *folder,const wchar_t *executable_path,HKEY approval);
+static BOOL FixtureShortcut(const wchar_t *path,const wchar_t *target,const wchar_t *arguments)
+{
+    IShellLinkW *link=NULL;IPersistFile *persist=NULL;
+    HRESULT hr=CoCreateInstance(&CLSID_ShellLink,NULL,CLSCTX_INPROC_SERVER,&IID_IShellLinkW,(void**)&link);
+    if(SUCCEEDED(hr))hr=IShellLinkW_SetPath(link,target);
+    if(SUCCEEDED(hr))hr=IShellLinkW_SetArguments(link,arguments);
+    if(SUCCEEDED(hr))hr=IShellLinkW_SetWorkingDirectory(link,L"C:\\Windows");
+    if(SUCCEEDED(hr))hr=IShellLinkW_SetDescription(link,L"Jira Task Manager — Jira tasks");
+    if(SUCCEEDED(hr))hr=IShellLinkW_QueryInterface(link,&IID_IPersistFile,(void**)&persist);
+    if(SUCCEEDED(hr))hr=IPersistFile_Save(persist,path,TRUE);
+    if(persist)IPersistFile_Release(persist);if(link)IShellLinkW_Release(link);return SUCCEEDED(hr);
+}
+static void ShortcutMigration(const wchar_t *folder,const wchar_t *executable)
+{
+    wchar_t old_link[MAX_PATH],new_link[MAX_PATH],target[MAX_PATH],arguments[64];
+    swprintf(old_link,MAX_PATH,L"%ls\\Jira Task Manager.lnk",folder);
+    swprintf(new_link,MAX_PATH,L"%ls\\Jira Tasklet.lnk",folder);
+    Expect(TaskManagerMigrateShortcutAt(folder,executable),"absent shortcut migration succeeds without enabling startup");
+    Expect(GetFileAttributesW(new_link)==INVALID_FILE_ATTRIBUTES,"absent shortcuts stay absent");
+    Expect(FixtureShortcut(old_link,executable,L"--startup"),"legacy owned startup link exists");
+    Expect(TaskManagerStartupEnabledAt(folder,executable),"legacy startup is recognized before migration");
+    Expect(TaskManagerMigrateShortcutAt(folder,executable),"owned legacy link migrates");
+    Expect(GetFileAttributesW(old_link)==INVALID_FILE_ATTRIBUTES,"old visible shortcut name disappears");
+    Expect(ReadShortcut(new_link,target,MAX_PATH,arguments,64)&&!wcsicmp(target,executable)&&!wcscmp(arguments,L"--startup"),"migration preserves target and startup argument");
+    IShellLinkW *link=NULL;IPersistFile *persist=NULL;wchar_t description[128],working[MAX_PATH];
+    HRESULT hr=CoCreateInstance(&CLSID_ShellLink,NULL,CLSCTX_INPROC_SERVER,&IID_IShellLinkW,(void**)&link);
+    if(SUCCEEDED(hr))hr=IShellLinkW_QueryInterface(link,&IID_IPersistFile,(void**)&persist);
+    if(SUCCEEDED(hr))hr=IPersistFile_Load(persist,new_link,STGM_READ);
+    if(SUCCEEDED(hr))hr=IShellLinkW_GetDescription(link,description,128);
+    if(SUCCEEDED(hr))hr=IShellLinkW_GetWorkingDirectory(link,working,MAX_PATH);
+    Expect(SUCCEEDED(hr)&&!wcscmp(description,L"Jira Tasklet — Jira tasks")&&!wcsicmp(working,L"C:\\Windows"),"migration updates display description and preserves working directory");
+    if(persist)IPersistFile_Release(persist);if(link)IShellLinkW_Release(link);
+    Expect(TaskManagerMigrateShortcutAt(folder,executable),"migration is idempotent");
+    Expect(TaskManagerSetStartupAt(folder,executable,FALSE),"migrated startup disables");
+    Expect(FixtureShortcut(old_link,executable,L"--startup"),"legacy startup recreated");
+    Expect(TaskManagerSetStartupAt(folder,executable,FALSE)&&GetFileAttributesW(old_link)==INVALID_FILE_ATTRIBUTES,"disable removes legacy owned startup too");
+    Expect(FixtureShortcut(old_link,L"C:\\Windows\\notepad.exe",L""),"foreign legacy link exists");
+    Expect(TaskManagerMigrateShortcutAt(folder,executable),"foreign old name is left alone");
+    Expect(ReadShortcut(old_link,target,MAX_PATH,arguments,64)&&!wcsicmp(target,L"C:\\Windows\\notepad.exe"),"foreign shortcut remains intact");
+    DeleteFileW(old_link);
+    Expect(FixtureShortcut(old_link,executable,L"--custom preserve"),"ordinary desktop link fixture");
+    Expect(FixtureShortcut(new_link,L"C:\\Windows\\notepad.exe",L""),"new name collision exists");
+    Expect(!TaskManagerMigrateShortcutAt(folder,executable),"name collision is reported without overwriting");
+    Expect(ReadShortcut(old_link,target,MAX_PATH,arguments,64)&&!wcsicmp(target,executable)&&!wcscmp(arguments,L"--custom preserve"),"collision preserves old launch behavior");
+    Expect(ReadShortcut(new_link,target,MAX_PATH,arguments,64)&&!wcsicmp(target,L"C:\\Windows\\notepad.exe"),"collision preserves foreign destination");
+    DeleteFileW(new_link);
+    Expect(TaskManagerMigrateShortcutAt(folder,executable),"desktop shortcut migrates after collision is removed");
+    Expect(ReadShortcut(new_link,target,MAX_PATH,arguments,64)&&!wcscmp(arguments,L"--custom preserve"),"non-startup arguments survive migration");
+    Expect(!TaskManagerStartupEnabledAt(folder,executable),"ordinary link does not enable startup");
+    DeleteFileW(new_link);
+}
+static void StartupApprovalMigration(const wchar_t *folder,const wchar_t *executable)
+{
+    wchar_t key_name[128],old_link[MAX_PATH],new_link[MAX_PATH];
+    swprintf(key_name,128,L"Software\\JiraTaskletIdentityFixture-%lu",GetCurrentProcessId());
+    HKEY key=NULL;Expect(RegCreateKeyExW(HKEY_CURRENT_USER,key_name,0,NULL,0,KEY_ALL_ACCESS,NULL,&key,NULL)==ERROR_SUCCESS,"isolated approval registry fixture created");
+    if(!key)return;
+    swprintf(old_link,MAX_PATH,L"%ls\\Jira Task Manager.lnk",folder);swprintf(new_link,MAX_PATH,L"%ls\\Jira Tasklet.lnk",folder);
+    const BYTE disabled[12]={3,0,0,0,1,2,3,4,5,6,7,8},enabled[12]={2};BYTE actual[12];DWORD type,size;
+    Expect(FixtureShortcut(old_link,executable,L"--startup"),"Windows-disabled startup fixture link created");
+    Expect(RegSetValueExW(key,L"Jira Task Manager.lnk",0,REG_BINARY,disabled,12)==ERROR_SUCCESS,"Windows-disabled state written");
+    Expect(TaskManagerMigrateShortcutWithApprovalAt(folder,executable,key),"disabled startup link migrates with approval");
+    size=12;Expect(RegQueryValueExW(key,L"Jira Tasklet.lnk",NULL,&type,actual,&size)==ERROR_SUCCESS&&type==REG_BINARY&&size==12&&!memcmp(actual,disabled,12),"exact disabled state including timestamp survives new filename");
+    DeleteFileW(new_link);RegDeleteValueW(key,L"Jira Tasklet.lnk");
+    Expect(FixtureShortcut(old_link,executable,L"--startup"),"approval collision fixture link created");
+    Expect(RegSetValueExW(key,L"Jira Tasklet.lnk",0,REG_BINARY,enabled,12)==ERROR_SUCCESS,"conflicting new-name approval exists");
+    Expect(!TaskManagerMigrateShortcutWithApprovalAt(folder,executable,key),"conflicting approval leaves legacy link untouched");
+    size=12;Expect(GetFileAttributesW(old_link)!=INVALID_FILE_ATTRIBUTES&&GetFileAttributesW(new_link)==INVALID_FILE_ATTRIBUTES&&RegQueryValueExW(key,L"Jira Tasklet.lnk",NULL,&type,actual,&size)==ERROR_SUCCESS&&!memcmp(actual,enabled,12),"approval collision preserves both original launch state and foreign value");
+    RegDeleteValueW(key,L"Jira Task Manager.lnk");
+    Expect(!TaskManagerMigrateShortcutWithApprovalAt(folder,executable,key),"unknown old state never adopts a stale new-name approval");
+    RegDeleteValueW(key,L"Jira Tasklet.lnk");
+    Expect(TaskManagerMigrateShortcutWithApprovalAt(folder,executable,key),"no approval entries allows default-state migration");
+    size=12;Expect(RegQueryValueExW(key,L"Jira Tasklet.lnk",NULL,&type,actual,&size)==ERROR_FILE_NOT_FOUND,"no approval entries invent no enabled state");
+    DeleteFileW(new_link);RegCloseKey(key);Expect(RegDeleteKeyW(HKEY_CURRENT_USER,key_name)==ERROR_SUCCESS,"isolated registry fixture removed");
+}
+
 int main(void)
 {
+    Expect(!wcscmp(TASK_MANAGER_EXE_NAME,L"Jira Task Manager.exe"),"display rename preserves executable identity");
+    Expect(!wcscmp(TASK_MANAGER_DATA_DIRECTORY,L"Task Manager"),"display rename preserves profile folder");
+    Expect(!wcscmp(TASK_MANAGER_STARTUP_LINK,L"Jira Tasklet.lnk"),"Windows sees the current startup shortcut name");
+    Expect(!wcscmp(TASK_MANAGER_CREDENTIAL,L"Task Manager:Jira:PAT"),"display rename preserves existing Jira token target");
     HRESULT com=CoInitializeEx(NULL,COINIT_APARTMENTTHREADED);
     Expect(SUCCEEDED(com),"COM initializes for real shortcut verification");
     wchar_t temp[MAX_PATH],root[MAX_PATH],old_directory[MAX_PATH],old_settings[MAX_PATH];
@@ -104,12 +187,14 @@ int main(void)
     Expect(TaskManagerSetStartupAt(startup,executable,TRUE),"startup shortcut is created");
     Expect(TaskManagerStartupEnabledAt(startup,executable),"created startup shortcut is recognized");
     wchar_t link_path[MAX_PATH],link_target[MAX_PATH],link_arguments[64];
-    swprintf(link_path,MAX_PATH,L"%ls\\Jira Task Manager.lnk",startup);
+    swprintf(link_path,MAX_PATH,L"%ls\\Jira Tasklet.lnk",startup);
     Expect(ReadShortcut(link_path,link_target,MAX_PATH,link_arguments,64),"startup shortcut can be loaded by Windows Shell");
     Expect(!wcsicmp(link_target,executable),"startup shortcut targets renamed Jira Task Manager executable");
     Expect(!wcscmp(link_arguments,L"--startup"),"startup shortcut uses the startup argument");
     Expect(TaskManagerSetStartupAt(startup,executable,FALSE),"startup shortcut can be disabled");
     Expect(GetFileAttributesW(link_path)==INVALID_FILE_ATTRIBUTES,"disabling startup removes the shortcut");
+    ShortcutMigration(startup,executable);
+    StartupApprovalMigration(startup,executable);
 
     wchar_t new_credential[128],old_native[128],old_legacy[128];DWORD pid=GetCurrentProcessId();
     swprintf(new_credential,128,L"Task Manager Test %lu",pid);

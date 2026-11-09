@@ -3,7 +3,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "native_jira.h"
+static void due_fields(void){
+    const char *values[]={"\"2026-11-12\"","null","\"2026-02-29\"","\"2026-11-12extra\"","\"2024-02-29\""};
+    const wchar_t *expected[]={L"2026-11-12",L"",L"",L"",L"2024-02-29"};
+    for(int i=0;i<5;i++){
+        char page[1024];snprintf(page,sizeof(page),"{\"startAt\":0,\"total\":1,\"issues\":[{\"key\":\"DUE-1\",\"fields\":{\"summary\":\"Due fixture\",\"duedate\":%s,\"status\":{\"id\":\"1\",\"name\":\"To Do\",\"statusCategory\":{\"key\":\"new\"}}}}]}",values[i]);
+        JiraSnapshot snapshot={0};int total,start;assert(JiraParsePage(page,strlen(page),&snapshot,&total,&start));
+        assert(snapshot.count==1&&!wcscmp(snapshot.items[0].due_date,expected[i]));JiraFreeSnapshot(&snapshot);
+    }
+    const char *created[]={"\"2026-11-01T12:00:00.000+0300\"","\"2026-11-01T09:00:00Z\"","null","\"bad\""};
+    for(int i=0;i<4;i++){
+        char page[1024];snprintf(page,sizeof(page),"{\"startAt\":0,\"total\":1,\"issues\":[{\"key\":\"DUE-1\",\"fields\":{\"summary\":\"Created fixture\",\"created\":%s,\"status\":{\"id\":\"1\",\"name\":\"To Do\",\"statusCategory\":{\"key\":\"new\"}}}}]}",created[i]);
+        JiraSnapshot snapshot={0};int total,start;assert(JiraParsePage(page,strlen(page),&snapshot,&total,&start));
+        SYSTEMTIME utc={.wYear=2026,.wMonth=11,.wDay=1,.wHour=9};FILETIME file;ULARGE_INTEGER value;
+        assert(SystemTimeToFileTime(&utc,&file));value.LowPart=file.dwLowDateTime;value.HighPart=file.dwHighDateTime;
+        assert(snapshot.items[0].created_utc==(i<2?value.QuadPart:0));JiraFreeSnapshot(&snapshot);
+    }
+}
 int main(void){
+    due_fields();
     const char *page="{\"startAt\":0,\"total\":1,\"issues\":[{\"key\":\"ABC-1\",\"fields\":{\"summary\":\"Test\",\"status\":{\"id\":\"91\",\"name\":\"Custom status\",\"statusCategory\":{\"key\":\"done\"}},\"comment\":{\"comments\":[{\"id\":\"10\",\"created\":\"2026-09-21T10:00:00.000+0300\",\"body\":\"older\"},{\"id\":\"11\",\"author\":{\"displayName\":\"Other User\"},\"created\":\"2026-09-22T10:00:00.000+0300\",\"body\":{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Latest\"},{\"type\":\"text\",\"text\":\" comment\"}]}]}}]}}}]}";
     JiraSnapshot snapshot={0};int total,start;
     assert(JiraParsePage(page,strlen(page),&snapshot,&total,&start));

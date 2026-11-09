@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include "native_jira.h"
+#include "native_jira_cache.h"
 #include "native_json.h"
 #include "native_identity.h"
 #include "native_notifications.h"
@@ -230,6 +231,10 @@ BOOL JiraParsePageFiltered(const char *json,size_t length,JiraSnapshot *s,int *t
            !field(&d,status,"id",items[i].status_id,80)||!field(&d,status,"name",items[i].status_name,128)||
            !field(&d,category,"key",items[i].category,32)||!items[i].key[0]||!items[i].status_name[0]){free(items);goto end;}
         latest_comment(&d,fields,&items[i],excluded_emails);
+        field(&d,t,"id",items[i].id,_countof(items[i].id));
+        field(&d,fields,"updated",items[i].updated,_countof(items[i].updated));
+        wchar_t due[64];if(field(&d,fields,"duedate",due,64)&&NativeDueParse(due,NULL))wcscpy_s(items[i].due_date,11,due);
+        wchar_t created[80];if(field(&d,fields,"created",created,80))items[i].created_utc=NativeCommentUtcTime(created);
         t=d.tokens[t].next;
     }
     JiraItem *expanded=realloc(s->items,(size_t)(s->count+count+1)*sizeof(*expanded));
@@ -365,10 +370,10 @@ BOOL JiraSaveAccount(const wchar_t *url,const wchar_t *token)
 BOOL JiraConnect(JiraConnection *c)
 {
     memset(c,0,sizeof(*c));wchar_t url[768];
-    if(account_signed_out())return fail(c,L"Signed out of Jira. Open Jira Task Manager settings to connect.");
-    if(!JiraGetUrl(url,768))return fail(c,L"Configure Jira in Jira Task Manager settings.");
+    if(account_signed_out())return fail(c,L"Signed out of Jira. Open " TASK_MANAGER_TITLE L" settings to connect.");
+    if(!JiraGetUrl(url,768))return fail(c,L"Configure Jira in " TASK_MANAGER_TITLE L" settings.");
     PCREDENTIALW credential=NULL;
-    if(!CredReadW(TASK_MANAGER_CREDENTIAL,CRED_TYPE_GENERIC,0,&credential))return fail(c,L"Jira token missing. Open Jira Task Manager settings.");
+    if(!CredReadW(TASK_MANAGER_CREDENTIAL,CRED_TYPE_GENERIC,0,&credential))return fail(c,L"Jira token missing. Open " TASK_MANAGER_TITLE L" settings.");
     size_t chars=credential->CredentialBlobSize/sizeof(wchar_t);
     BOOL valid=chars>0&&chars<8192&&credential->CredentialBlobSize%sizeof(wchar_t)==0;
     if(valid){
@@ -377,11 +382,13 @@ BOOL JiraConnect(JiraConnection *c)
         else valid=FALSE;
     }
     if(credential->CredentialBlob&&credential->CredentialBlobSize)SecureZeroMemory(credential->CredentialBlob,credential->CredentialBlobSize);
+    ULONGLONG credential_stamp=((ULONGLONG)credential->LastWritten.dwHighDateTime<<32)|credential->LastWritten.dwLowDateTime;
     CredFree(credential);
     if(!valid)return fail(c,L"Invalid Jira token in Windows Credential Manager.");
     for(size_t i=0;i<chars;i++)if(c->token[i]<33||c->token[i]>126){JiraDisconnect(c);return fail(c,L"Invalid Jira token format.");}
     wchar_t *token=c->token;c->token=NULL;
     BOOL ok=JiraConnectWithToken(c,url,token);
+    if(ok)c->credential_stamp=credential_stamp;
     SecureZeroMemory(token,(chars+1)*sizeof(wchar_t));free(token);return ok;
 }
 
@@ -391,34 +398,45 @@ void JiraDisconnect(JiraConnection *c)
     if(c->session)WinHttpCloseHandle(c->session);
     c->connection=c->session=NULL;
     if(c->token){SecureZeroMemory(c->token,(c->token_chars+1)*sizeof(wchar_t));free(c->token);c->token=NULL;c->token_chars=0;}
+    c->account_cache_verified=FALSE;memset(&c->account_cache,0,sizeof(c->account_cache));
 }
 
 BOOL JiraCheckHttpStatus(JiraConnection *c,DWORD status)
 {
     c->response_status=status;
     if(status>=200&&status<300)return TRUE;
-    if(status==401)return fail(c,L"Jira rejected the token. Check the Jira Task Manager account settings.");
+    if(status==401)return fail(c,L"Jira rejected the token. Check the " TASK_MANAGER_TITLE L" account settings.");
     if(status==403)return fail(c,L"Jira denied this operation (403).");
     swprintf(c->error,256,L"Jira returned HTTP %lu. No automatic retry was made.",status);return FALSE;
 }
 
-static BOOL request_bounded(JiraConnection *c,const wchar_t *method,const wchar_t *relative,const char *body,char **out,size_t *length,size_t maximum,BOOL image)
+static BOOL read_budget(JiraConnection *c,HINTERNET request)
+{
+    if(!c->read_deadline)return TRUE;
+    ULONGLONG now=GetTickCount64();if(now>=c->read_deadline)return fail(c,L"Jira status synchronization timed out.");
+    /* Resolve/connect/send/receive share the remaining budget, rather than
+       inheriting the much longer interactive-operation network timeouts. */
+    int phase=(int)max(1,min(2000,(c->read_deadline-now)/4));
+    return !request||WinHttpSetTimeouts(request,phase,phase,phase,phase);
+}
+static BOOL request_bounded_core(JiraConnection *c,const wchar_t *method,const wchar_t *relative,const char *body,char **out,size_t *length,size_t maximum,BOOL image)
 {
     c->request_sent=FALSE;c->response_status=0;
     *out=NULL;*length=0;wchar_t path[2048];
+    if(!read_budget(c,NULL))return FALSE;
     if(image&&c->image_bytes_remaining){maximum=min(maximum,*c->image_bytes_remaining);if(!maximum)return fail(c,L"Image transfer limit reached.");}
     if(c->cancelled&&InterlockedCompareExchange((volatile LONG*)c->cancelled,0,0))return fail(c,L"Request cancelled.");
     if(c->send){
         c->request_sent=TRUE;
         BOOL ok=c->send(c,method,relative,body,out,length);
         if(image&&c->image_bytes_remaining)*c->image_bytes_remaining-=min(*length,*c->image_bytes_remaining);
-        if(!ok||*length>maximum){free(*out);*out=NULL;*length=0;return FALSE;}return TRUE;
+        if(!ok||*length>maximum||!read_budget(c,NULL)){free(*out);*out=NULL;*length=0;return FALSE;}return TRUE;
     }
     if(swprintf(path,2048,L"%ls%ls",c->prefix,relative)<0)return fail(c,L"Jira request path too long.");
     HINTERNET req=WinHttpOpenRequest(c->connection,method,path,NULL,WINHTTP_NO_REFERER,WINHTTP_DEFAULT_ACCEPT_TYPES,WINHTTP_FLAG_SECURE);
     if(!req)return fail(c,L"Cannot create Jira request.");
     DWORD policy=WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
-    BOOL ok=WinHttpSetOption(req,WINHTTP_OPTION_REDIRECT_POLICY,&policy,sizeof(policy));
+    BOOL ok=WinHttpSetOption(req,WINHTTP_OPTION_REDIRECT_POLICY,&policy,sizeof(policy))&&read_budget(c,req);
     if(image)ok=ok&&WinHttpSetTimeouts(req,5000,5000,10000,10000);
     size_t header_count=wcslen(c->token)+128;wchar_t *headers=calloc(header_count,sizeof(wchar_t));
     if(!headers){WinHttpCloseHandle(req);return fail(c,L"Not enough memory.");}
@@ -426,9 +444,23 @@ static BOOL request_bounded(JiraConnection *c,const wchar_t *method,const wchar_
     DWORD body_len=body?(DWORD)strlen(body):0;
     if(ok){c->request_sent=TRUE;ok=WinHttpSendRequest(req,headers,(DWORD)-1,(void*)body,body_len,body_len,0);}
     SecureZeroMemory(headers,header_count*sizeof(wchar_t));free(headers);
-    if(ok)ok=WinHttpReceiveResponse(req,NULL);
+    if(ok)ok=read_budget(c,req)&&WinHttpReceiveResponse(req,NULL);
     if(!ok){WinHttpCloseHandle(req);return fail(c,L"Jira unavailable or request timed out. Check network/VPN. Do not repeat a status change before refreshing.");}
     DWORD status=0,size=sizeof(status);ok=WinHttpQueryHeaders(req,WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,NULL,&status,&size,NULL);
+    if(ok&&status==429){
+        wchar_t retry[128]=L"";DWORD retry_size=sizeof(retry);
+        if(WinHttpQueryHeaders(req,WINHTTP_QUERY_CUSTOM,L"Retry-After",retry,&retry_size,NULL)){
+            wchar_t *end=NULL;unsigned long seconds=wcstoul(retry,&end,10);
+            if(end!=retry&&!*end)c->retry_after_seconds=(DWORD)seconds;
+            else{
+                SYSTEMTIME date;FILETIME target,current;
+                if(WinHttpTimeToSystemTime(retry,&date)&&SystemTimeToFileTime(&date,&target)){
+                    GetSystemTimeAsFileTime(&current);ULARGE_INTEGER a={.LowPart=target.dwLowDateTime,.HighPart=target.dwHighDateTime},b={.LowPart=current.dwLowDateTime,.HighPart=current.dwHighDateTime};
+                    c->retry_after_seconds=a.QuadPart>b.QuadPart?(DWORD)min(0xffffffffull,(a.QuadPart-b.QuadPart+9999999)/10000000):1;
+                }
+            }
+        }
+    }
     if(!ok||!JiraCheckHttpStatus(c,status)){
         WinHttpCloseHandle(req);
         if(!ok)fail(c,L"Cannot read Jira response status.");return FALSE;
@@ -438,17 +470,41 @@ static BOOL request_bounded(JiraConnection *c,const wchar_t *method,const wchar_
     for(;;){
         DWORD available=0,got=0;
         if(c->cancelled&&InterlockedCompareExchange((volatile LONG*)c->cancelled,0,0)){ok=FALSE;break;}
-        if(!WinHttpQueryDataAvailable(req,&available)){ok=FALSE;break;}
+        if(!read_budget(c,req)||!WinHttpQueryDataAvailable(req,&available)){ok=FALSE;break;}
         if(!available)break;
         if(available>maximum-used||GetTickCount64()-began>(image?15000u:30000u)){ok=FALSE;break;}
         if(used+available+1>cap){cap=used+available+1;char *next=realloc(data,cap);if(!next){ok=FALSE;break;}data=next;}
-        if(!WinHttpReadData(req,data+used,available,&got)||!got){ok=FALSE;break;}
+        if(!read_budget(c,req)||!WinHttpReadData(req,data+used,available,&got)||!got){ok=FALSE;break;}
         used+=got;
         if(image&&c->image_bytes_remaining)*c->image_bytes_remaining-=min((size_t)got,*c->image_bytes_remaining);
     }
     WinHttpCloseHandle(req);
-    if(!ok){free(data);return fail(c,L"Incomplete or oversized Jira response. Previous tasks retained.");}
+    if(!ok||!read_budget(c,NULL)){free(data);return fail(c,L"Incomplete or oversized Jira response. Previous tasks retained.");}
     data[used]=0;*out=data;*length=used;return TRUE;
+}
+static SRWLOCK jira_transport_lock=SRWLOCK_INIT;
+static ULONGLONG jira_cooldown_until;
+static BOOL request_bounded(JiraConnection *c,const wchar_t *method,const wchar_t *relative,const char *body,char **out,size_t *length,size_t maximum,BOOL image)
+{
+    *out=NULL;*length=0;c->request_sent=FALSE;
+    while(!TryAcquireSRWLockExclusive(&jira_transport_lock)){
+        if(c->cancelled&&InterlockedCompareExchange((volatile LONG*)c->cancelled,0,0))return fail(c,L"Request cancelled.");
+        if(!read_budget(c,NULL))return FALSE;Sleep(10);
+    }
+    ULONGLONG now=GetTickCount64();BOOL ok;
+    c->retry_after_seconds=0;
+    if(now<jira_cooldown_until){
+        *out=NULL;*length=0;c->request_sent=FALSE;c->response_status=429;
+        swprintf(c->error,256,L"Jira rate limit: wait %llu seconds before trying again.",(jira_cooldown_until-now+999)/1000);ok=FALSE;
+    }else{
+        ok=request_bounded_core(c,method,relative,body,out,length,maximum,image);
+        if(c->response_status==429){
+            DWORD seconds=c->retry_after_seconds?c->retry_after_seconds:60;
+            jira_cooldown_until=GetTickCount64()+(ULONGLONG)seconds*1000;
+            swprintf(c->error,256,L"Jira rate limit: wait %lu seconds before trying again.",seconds);
+        }
+    }
+    ReleaseSRWLockExclusive(&jira_transport_lock);return ok;
 }
 static BOOL request(JiraConnection *c,const wchar_t *method,const wchar_t *relative,const char *body,char **out,size_t *length)
 {return request_bounded(c,method,relative,body,out,length,16u*1024u*1024u,FALSE);}
@@ -465,7 +521,7 @@ static BOOL JiraLoadScope(JiraConnection *c,JiraSnapshot *result,BOOL include_co
 {
     int offset=0,total=0;
     do{
-        wchar_t path[512];swprintf(path,512,L"/rest/api/2/search?jql=%ls%%20%%3D%%20currentUser()%%20ORDER%%20BY%%20updated%%20DESC&startAt=%d&maxResults=100&fields=summary,status,updated%ls",
+        wchar_t path[512];swprintf(path,512,L"/rest/api/2/search?jql=%ls%%20%%3D%%20currentUser()%%20ORDER%%20BY%%20updated%%20DESC&startAt=%d&maxResults=100&fields=summary,status,updated,duedate,created%ls",
             reporter?L"reporter":L"assignee",offset,include_comments?L",comment":L"");
         char *data=NULL;size_t length=0;
         if(!request(c,L"GET",path,NULL,&data,&length))return FALSE;
@@ -512,18 +568,39 @@ BOOL JiraMergeReported(JiraSnapshot *assigned,const JiraSnapshot *reported)
     return TRUE;
 }
 
+static void JiraServerKey(const JiraConnection *c,wchar_t server[800])
+{
+    wchar_t host[256];wcscpy_s(host,256,c->host);CharLowerBuffW(host,(DWORD)wcslen(host));
+    swprintf(server,800,L"%ls:%u%ls",host,c->port,c->prefix);
+}
+static void JiraCopyAccount(JiraSnapshot *to,const JiraSnapshot *from)
+{
+    wcscpy_s(to->account,256,from->account);to->identity=from->identity;
+    wcscpy_s(to->server,800,from->server);to->credential_stamp=from->credential_stamp;
+}
+BOOL JiraSeedAccount(JiraConnection *c,const JiraSnapshot *verified)
+{
+    if(!c||!verified||!c->credential_stamp||c->credential_stamp!=verified->credential_stamp||
+       !verified->account[0]||!SameJiraUser(&verified->identity,&verified->identity))return FALSE;
+    wchar_t server[800];JiraServerKey(c,server);if(wcscmp(server,verified->server))return FALSE;
+    JiraCopyAccount(&c->account_cache,verified);c->account_cache_verified=TRUE;return TRUE;
+}
 static BOOL JiraLoadAccount(JiraConnection *c,JiraSnapshot *result)
 {
+    wchar_t server[800];JiraServerKey(c,server);
+    if(c->account_cache_verified&&c->account_cache.credential_stamp==c->credential_stamp&&!wcscmp(c->account_cache.server,server)){
+        JiraCopyAccount(result,&c->account_cache);return TRUE;
+    }
+    c->account_cache_verified=FALSE;
     char *data=NULL;size_t length=0;NJDoc d={0};
     if(!request(c,L"GET",L"/rest/api/2/myself",NULL,&data,&length))return FALSE;
     BOOL ok=nj_parse(&d,data,length)&&field(&d,0,"displayName",result->account,256);
     if(ok){
         user_identity(&d,0,&result->identity);
-        /* Bind local per-account state to the connection that produced this snapshot,
-           never to credentials that may be replaced while the old list is visible. */
-        if(c->host[0]){
-            wchar_t host[256];wcscpy_s(host,_countof(host),c->host);CharLowerBuffW(host,(DWORD)wcslen(host));
-            swprintf(result->server,_countof(result->server),L"%ls:%u%ls",host,c->port,c->prefix);
+        if(c->host[0])wcscpy_s(result->server,800,server);
+        result->credential_stamp=c->credential_stamp;
+        if(SameJiraUser(&result->identity,&result->identity)){
+            JiraCopyAccount(&c->account_cache,result);c->account_cache_verified=TRUE;
         }
     }
     nj_free(&d);free(data);return ok?TRUE:fail(c,L"Unexpected Jira account response.");
@@ -552,12 +629,52 @@ BOOL JiraLoadWithReporter(JiraConnection *c,JiraSnapshot *snapshot,BOOL include_
 
 BOOL JiraLoad(JiraConnection *c,JiraSnapshot *snapshot){return JiraLoadWithComments(c,snapshot,FALSE);}
 
+#include "native_jira_refresh.h"
+
 static BOOL safe_segment(const wchar_t *text)
 {
     if(!text||!text[0])return FALSE;
     for(;*text;text++)if(!((*text>=L'0'&&*text<=L'9')||(*text>=L'A'&&*text<=L'Z')||(*text>=L'a'&&*text<=L'z')||*text==L'-'||*text==L'_'))return FALSE;
     return TRUE;
 }
+
+static BOOL read_issue_statuses(JiraConnection *c,const wchar_t (*keys)[80],int count,JiraSnapshot *snapshot)
+{
+    if(!snapshot||!keys||count<1||count>JIRA_MAX_TASKS)return fail(c,L"Invalid Jira status request.");
+    for(int i=0;i<count;i++)if(wcsnlen_s(keys[i],80)>=80||!safe_segment(keys[i]))return fail(c,L"Invalid Jira issue key.");
+    JiraSnapshot result={0};if(!JiraLoadAccount(c,&result))return FALSE;
+    result.items=calloc((size_t)count,sizeof(*result.items));if(!result.items)return fail(c,L"Not enough memory.");
+    for(int i=0;i<count;i++){
+        wchar_t path[256];swprintf(path,_countof(path),L"/rest/api/2/issue/%ls?fields=status,assignee,reporter",keys[i]);
+        char *data=NULL;size_t length=0;
+        if(!request(c,L"GET",path,NULL,&data,&length)){JiraFreeSnapshot(&result);return FALSE;}
+        NJDoc doc={0};BOOL ok=nj_parse(&doc,data,length);JiraItem *item=&result.items[i];
+        int fields=ok?nj_get(&doc,0,"fields"):-1,status=ok?nj_get(&doc,fields,"status"):-1;
+        ok=ok&&field(&doc,0,"key",item->key,80)&&!_wcsicmp(item->key,keys[i])&&
+            field(&doc,status,"id",item->status_id,80)&&item->status_id[0]&&
+            field(&doc,status,"name",item->status_name,128)&&item->status_name[0]&&
+            field(&doc,nj_get(&doc,status,"statusCategory"),"key",item->category,32)&&item->category[0];
+        if(ok){
+            JiraUserIdentity assignee,reporter;
+            user_identity(&doc,nj_get(&doc,fields,"assignee"),&assignee);
+            user_identity(&doc,nj_get(&doc,fields,"reporter"),&reporter);
+            item->assigned_to_me=SameJiraUser(&assignee,&result.identity);
+            item->reported_by_me=SameJiraUser(&reporter,&result.identity);
+        }
+        nj_free(&doc);free(data);
+        if(!ok){JiraFreeSnapshot(&result);return fail(c,L"Unexpected Jira issue status response.");}
+        result.count++;
+    }
+    *snapshot=result;return TRUE;
+}
+BOOL JiraReadIssueStatusesWithin(JiraConnection *c,const wchar_t (*keys)[80],int count,JiraSnapshot *snapshot,DWORD milliseconds)
+{
+    ULONGLONG previous=c->read_deadline;
+    if(milliseconds){ULONGLONG deadline=GetTickCount64()+milliseconds;c->read_deadline=previous?min(previous,deadline):deadline;}
+    BOOL ok=read_issue_statuses(c,keys,count,snapshot);c->read_deadline=previous;return ok;
+}
+BOOL JiraReadIssueStatuses(JiraConnection *c,const wchar_t (*keys)[80],int count,JiraSnapshot *snapshot)
+{return JiraReadIssueStatusesWithin(c,keys,count,snapshot,0);}
 
 BOOL JiraReadComments(JiraConnection *c,const wchar_t *key,JiraComments *comments)
 {
@@ -683,28 +800,19 @@ static const JiraTransitionItem *destination(const JiraTransitions *ts,const wch
 BOOL JiraSwitch(JiraConnection *c,const wchar_t *key)
 {
     c->switch_unavailable=FALSE;c->switch_status[0]=0;
-    JiraSnapshot current={0};if(!JiraLoad(c,&current))return FALSE;
+    if(!safe_segment(key)||wcslen(key)>=80)return fail(c,L"Invalid Jira issue key.");
+    wchar_t keys[1][80];wcscpy_s(keys[0],80,key);
+    JiraSnapshot current={0};if(!JiraReadIssueStatuses(c,keys,1,&current))return FALSE;
     JiraItem *selected=NULL;for(int i=0;i<current.count;i++)if(!_wcsicmp(current.items[i].key,key))selected=&current.items[i];
-    if(!selected){JiraFreeSnapshot(&current);return fail(c,L"Task no longer assigned to this account. Refresh the list.");}
+    if(!selected||!selected->assigned_to_me){JiraFreeSnapshot(&current);return fail(c,L"Task no longer assigned to this account. Refresh the list.");}
     JiraTransitions transitions;BOOL ok=JiraReadTransitions(c,key,&transitions);
     const JiraTransitionItem *target=ok?destination(&transitions,!_wcsicmp(selected->status_name,L"In Progress")?L"On Hold":L"In Progress"):NULL;
     if(!target){
         if(ok){c->switch_unavailable=TRUE;wcscpy_s(c->switch_status,128,selected->status_name);}
         JiraFreeSnapshot(&current);return ok?fail(c,L"Required Jira transition unavailable."):FALSE;
     }
-    wchar_t target_id[80],target_status[80],target_name[128];wcscpy_s(target_id,80,target->id);wcscpy_s(target_status,80,target->status_id);wcscpy_s(target_name,128,target->status_name);
-    struct HoldTarget {wchar_t id[80],status_id[80];} *holds=calloc((size_t)(current.count+1),sizeof(*holds));
-    if(!holds){JiraFreeSnapshot(&current);return fail(c,L"Not enough memory.");}
-    if(_wcsicmp(selected->status_name,L"In Progress")){
-        for(int i=0;i<current.count;i++)if(_wcsicmp(current.items[i].key,key)&&!_wcsicmp(current.items[i].status_name,L"In Progress")){
-            if(!JiraReadTransitions(c,current.items[i].key,&transitions)){ok=FALSE;break;}
-            const JiraTransitionItem *hold=destination(&transitions,L"On Hold");
-            if(!hold){ok=fail(c,L"An active task cannot move to On Hold. Nothing changed.");break;}
-            wcscpy_s(holds[i].id,80,hold->id);wcscpy_s(holds[i].status_id,80,hold->status_id);
-        }
-    }
-    if(ok)for(int i=0;i<current.count;i++)if(holds[i].id[0]&&
-        !post_transition(c,current.items[i].key,holds[i].id,NULL,NULL,NULL,holds[i].status_id,L"On Hold")){ok=FALSE;break;}
-    if(ok)ok=post_transition(c,key,target_id,NULL,NULL,NULL,target_status,target_name);
-    free(holds);JiraFreeSnapshot(&current);return ok;
+    /* Change only the selected issue. Jira owns automatic pauses of other
+       active issues; explicit pause of this selected issue still uses On Hold. */
+    ok=post_transition(c,key,target->id,NULL,NULL,NULL,target->status_id,target->status_name);
+    JiraFreeSnapshot(&current);return ok;
 }

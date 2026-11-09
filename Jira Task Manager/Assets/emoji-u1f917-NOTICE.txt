@@ -1,0 +1,20 @@
+U+1F917 Sample image — Noto Color Emoji
+
+Copyright Google LLC and the Noto Emoji contributors.
+
+The unmodified 72 x 72 PNG was obtained from the Sample column of the official
+Unicode Emoji List on 2026-10-21:
+https://www.unicode.org/emoji/charts/emoji-list.html#1f917
+
+Unicode credits its Sample images to Noto Color Emoji. Upstream:
+https://github.com/googlefonts/noto-emoji
+
+Upstream's README identifies image resources as Apache License 2.0 and fonts as
+SIL Open Font License 1.1. Both upstream license notices are included alongside
+this asset and embedded as resources 502 and 503. No emoji font or third-party
+runtime library is bundled; only this PNG is rendered by Windows WIC/GDI.
+
+Asset: emoji-u1f917-sample.png
+SHA-256: 10b609ad6e9bcaeee83e6f78731dd17fda2f982704d0ad6b5bc35ee502642d89
+Apache notice: noto-emoji-APACHE-2.0.txt
+Additional upstream font notice: noto-emoji-OFL-1.1.txt

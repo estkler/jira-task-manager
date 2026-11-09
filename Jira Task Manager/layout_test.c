@@ -311,15 +311,21 @@ static void about_regression(BOOL check_alignment)
                 RECT actual;GetWindowRect(GetDlgItem(s_window,ids[i]),&actual);MapWindowPoints(NULL,s_window,(POINT*)&actual,2);
                 assert(actual.left>=S(26)&&actual.right<=client.right-S(26));
                 assert(actual.bottom<=client.bottom-S(52)-S(8));
-                if(!i)first=actual;else if(check_alignment)assert(actual.left==first.left&&actual.right==first.right);
+                if(!i)first=actual;
+                else if(check_alignment){
+                    RECT contact,diagnostics;GetWindowRect(GetDlgItem(s_window,238),&contact);GetWindowRect(GetDlgItem(s_window,234),&diagnostics);
+                    assert(contact.top==diagnostics.top&&contact.bottom==diagnostics.bottom&&contact.right<diagnostics.left);
+                    MapWindowPoints(NULL,s_window,(POINT*)&contact,2);assert(first.left==contact.left&&first.bottom<contact.top);
+                }
             }
         }
         DestroyWindow(s_window);
     }
-    puts("About actions are aligned and inside the real captioned window's panel");
+    puts("About update action and compact support row fit inside the real captioned window's panel");
 }
 int main(int argc,char **argv)
 {
+    g_show_all_tab=TRUE; /* Explicit opt-in for the three-tab layout matrix. */
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     g_instance=GetModuleHandleW(NULL);
     INITCOMMONCONTROLSEX common={sizeof(common),ICC_LISTVIEW_CLASSES|ICC_WIN95_CLASSES};InitCommonControlsEx(&common);

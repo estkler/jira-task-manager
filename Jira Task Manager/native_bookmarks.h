@@ -8,6 +8,9 @@ typedef struct NativeBookmarks {
     BookmarkKeySet saved,draft;
     BOOL editing,showing,previous_showing;
 } NativeBookmarks;
+typedef enum NativeTaskMarkStore {TASK_MARK_BOOKMARKS,TASK_MARK_DIMMED} NativeTaskMarkStore;
+BOOL NativeTaskMarksLoad(NativeBookmarks *model,const wchar_t *settings_path,const wchar_t *server,const wchar_t *account,NativeTaskMarkStore store);
+BOOL NativeTaskMarksCommit(NativeBookmarks *model,const wchar_t *settings_path,const wchar_t *server,const wchar_t *account,NativeTaskMarkStore store);
 void NativeBookmarksFree(NativeBookmarks *model);
 BOOL NativeBookmarksBegin(NativeBookmarks *model);
 void NativeBookmarksCancel(NativeBookmarks *model);

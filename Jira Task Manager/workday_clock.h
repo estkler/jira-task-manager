@@ -19,8 +19,7 @@ static inline BOOL WorkdayNormalizeStart(const SYSTEMTIME *now,const SYSTEMTIME 
 static inline ULONGLONG WorkdayElapsedSeconds(ULONGLONG started,ULONGLONG now)
 {
     if(!started||now<=started)return 0;
-    ULONGLONG elapsed=now-started;
-    return elapsed>WORKDAY_DURATION_SECONDS?WORKDAY_DURATION_SECONDS:elapsed;
+    return now-started;
 }
 
 #endif

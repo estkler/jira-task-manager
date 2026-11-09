@@ -3,6 +3,8 @@
 #include <windows.h>
 #include "native_images.h"
 #include "native_avatar_cache.h"
+#include "native_token_info.h"
+#include "native_due_date.h"
 #define JIRA_MAX_TASKS 10000
 #define JIRA_MAX_TRANSITIONS 128
 #define JIRA_MAX_RATINGS 16
@@ -10,13 +12,18 @@
 typedef struct JiraUserIdentity { wchar_t account_id[256],key[256],name[256]; } JiraUserIdentity;
 typedef struct JiraItem {
     wchar_t key[80], summary[1024], status_id[80], status_name[128], category[32];
+    wchar_t id[80],updated[80]; /* Stable ID and server revision for detail reuse. */
     wchar_t latest_comment[2048];
     wchar_t latest_comment_id[80],latest_comment_author[256];
     JiraUserIdentity latest_comment_identity;
     wchar_t latest_comment_email[256],latest_comment_created[64];
     BOOL assigned_to_me,reported_by_me;
+    wchar_t due_date[11];
+    ULONGLONG created_utc;
 } JiraItem;
-typedef struct JiraSnapshot { JiraItem *items; int count; wchar_t account[256]; JiraUserIdentity identity; wchar_t server[800]; } JiraSnapshot;
+typedef struct JiraSnapshot { JiraItem *items; int count; wchar_t account[256]; JiraUserIdentity identity; wchar_t server[800];
+    wchar_t comment_filter[2048];BOOL refresh_cache;ULONGLONG credential_stamp;
+} JiraSnapshot;
 typedef struct JiraRatingOption { wchar_t id[80], value[64]; } JiraRatingOption;
 typedef struct JiraTransitionItem {
     wchar_t id[80], name[128], status_name[128], category[32], rating_field_id[80];
@@ -56,6 +63,11 @@ typedef struct JiraConnection {
     void *status_write_context;
     BOOL request_sent;DWORD response_status; /* Last request, not cumulative write_attempted. */
     BOOL switch_unavailable;wchar_t switch_status[128]; /* Successful preflight, but no start/pause transition. */
+    ULONGLONG read_deadline; /* Temporary GET-only budget; never retries or constrains a POST. */
+    ULONGLONG credential_stamp; /* Credential Manager LastWritten; never token material. */
+    DWORD retry_after_seconds;
+    JiraSnapshot account_cache;BOOL account_cache_verified; /* Metadata only, no item ownership. */
+    wchar_t snapshot_cache_path[MAX_PATH]; /* Optional encrypted restart baseline. */
 } JiraConnection;
 BOOL JiraConnect(JiraConnection *client);
 BOOL JiraParseUrl(JiraConnection *client,const wchar_t *url);
@@ -66,10 +78,17 @@ BOOL JiraSaveAccount(const wchar_t *url,const wchar_t *token);
 BOOL JiraHasAccount(void);
 BOOL JiraSignOut(void);
 BOOL JiraVerifyAccount(JiraConnection *client,wchar_t *account,size_t capacity);
+BOOL JiraSeedAccount(JiraConnection *client,const JiraSnapshot *verified);
+BOOL JiraConfigureSnapshotCache(JiraConnection *client,const wchar_t *settings_path);
+BOOL JiraSnapshotCacheRemove(const wchar_t *settings_path);
 void JiraDisconnect(JiraConnection *client);
 BOOL JiraLoad(JiraConnection *client,JiraSnapshot *snapshot);
 BOOL JiraLoadWithComments(JiraConnection *client,JiraSnapshot *snapshot,BOOL include_comments);
 BOOL JiraLoadWithReporter(JiraConnection *client,JiraSnapshot *snapshot,BOOL include_comments);
+BOOL JiraRefreshWithReporter(JiraConnection *client,const JiraSnapshot *previous,JiraSnapshot *snapshot);
+/* Sparse status/ownership response for explicit issue keys; never a task feed. */
+BOOL JiraReadIssueStatuses(JiraConnection *client,const wchar_t (*keys)[80],int count,JiraSnapshot *snapshot);
+BOOL JiraReadIssueStatusesWithin(JiraConnection *client,const wchar_t (*keys)[80],int count,JiraSnapshot *snapshot,DWORD milliseconds);
 BOOL JiraMergeReported(JiraSnapshot *assigned,const JiraSnapshot *reported);
 BOOL JiraReadTransitions(JiraConnection *client,const wchar_t *key,JiraTransitions *transitions);
 BOOL JiraReadComments(JiraConnection *client,const wchar_t *key,JiraComments *comments);

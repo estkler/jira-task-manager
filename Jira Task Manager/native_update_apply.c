@@ -1,4 +1,5 @@
 #include "native_update_apply.h"
+#include "native_identity.h"
 #include <bcrypt.h>
 #include <aclapi.h>
 #include <shellapi.h>
@@ -114,12 +115,12 @@ BOOL UpdateFormatApplyFailure(const UpdateApplyFailure *f,BOOL ru,wchar_t *text,
     }else if(f->backup[0]){
         if(swprintf(recovery,_countof(recovery),ru?L"Автоматическое восстановление не завершено (ошибка Windows: %lu).\nПредыдущая версия сохранена в резервной копии:\n%ls\n\nВосстановите этот файл по адресу:\n%ls\nНе удаляйте резервную копию.":L"Automatic recovery did not complete (Windows error: %lu).\nThe previous version is preserved in this backup:\n%ls\n\nRestore this file to:\n%ls\nDo not delete the backup.",f->rollback_error,f->backup,f->target)<0)return FALSE;
     }else if(swprintf(recovery,_countof(recovery),ru?L"Установленный файл не был изменён обновлением.\nПроверьте приложение по адресу:\n%ls":L"The updater did not change the installed file.\nCheck the application at:\n%ls",f->target)<0)return FALSE;
-    return swprintf(text,capacity,ru?L"Не удалось обновить Jira Task Manager.\n\nОперация: %ls\nОшибка Windows: %lu\n%ls\n%ls":L"Could not update Jira Task Manager.\n\nOperation: %ls\nWindows error: %lu\n%ls\n%ls",ru?russian[f->phase]:en[f->phase],f->windows_error,detail,recovery)>=0;
+    return swprintf(text,capacity,ru?L"Не удалось обновить " TASK_MANAGER_TITLE L".\n\nОперация: %ls\nОшибка Windows: %lu\n%ls\n%ls":L"Could not update " TASK_MANAGER_TITLE L".\n\nOperation: %ls\nWindows error: %lu\n%ls\n%ls",ru?russian[f->phase]:en[f->phase],f->windows_error,detail,recovery)>=0;
 }
 static void report_failure(const UpdateApplyFailure *failure){
     wchar_t text[2048];BOOL ru=PRIMARYLANGID(GetUserDefaultUILanguage())==LANG_RUSSIAN;
-    if(!UpdateFormatApplyFailure(failure,ru,text,_countof(text)))wcscpy_s(text,_countof(text),L"Jira Task Manager update failed. Keep the installation backup and try again later.");
-    MessageBoxW(NULL,text,L"Jira Task Manager",MB_OK|MB_ICONERROR|MB_SETFOREGROUND);
+    if(!UpdateFormatApplyFailure(failure,ru,text,_countof(text)))wcscpy_s(text,_countof(text),TASK_MANAGER_TITLE L" update failed. Keep the installation backup and try again later.");
+    MessageBoxW(NULL,text,TASK_MANAGER_TITLE,MB_OK|MB_ICONERROR|MB_SETFOREGROUND);
 }
 int UpdateRunHelperUsing(int argc,wchar_t **argv,const UpdateApplyOps *ops){
     UpdateStatus result=UPDATE_INVALID;UpdateApplyRequest r={0};ULONGLONG n;wchar_t source[MAX_PATH],source_dir[MAX_PATH],target_dir[MAX_PATH],random[33]={0},candidate[MAX_PATH]={0},backup[MAX_PATH]={0};

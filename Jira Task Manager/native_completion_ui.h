@@ -16,7 +16,7 @@ static void CompletionCollectClosed(void)
 static void CompletionRefreshEditor(CompletionEditor *editor)
 {
     TransitionInputDialog *dialog=&editor->dialog;HWND window=dialog->window;if(!window)return;
-    SetWindowTextW(window,g_russian?L"Jira Task Manager · Завершение задачи":L"Jira Task Manager · Complete task");
+    SetWindowTextW(window,g_russian?APP_TITLE L" · Завершение задачи":APP_TITLE L" · Complete task");
     SetWindowTextW(GetDlgItem(window,IDC_TRANSITION_HELPER),g_russian?L"Оценка":L"Rating");
     SetWindowTextW(GetDlgItem(window,IDC_TRANSITION_REMEMBER),g_russian?L"Запомнить комментарий":L"Remember comment");
     SetWindowTextW(GetDlgItem(window,IDCANCEL),g_russian?L"Отмена":L"Cancel");

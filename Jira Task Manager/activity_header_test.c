@@ -192,6 +192,7 @@ static void test_read_activity_releases_its_slot_immediately(void)
 }
 int main(int argc,char **argv)
 {
+    g_show_all_tab=TRUE; /* Explicit opt-in for all three tab activity counters. */
     paint_label=CreateWindowExW(0,L"BUTTON",L"",WS_POPUP,0,0,160,40,NULL,NULL,GetModuleHandleW(NULL),NULL);assert(paint_label);
     if(argc<2||!strcmp(argv[1],"zero"))test_no_badge_means_centered_icon();
     if(argc<2||!strcmp(argv[1],"counter"))test_readable_counter();

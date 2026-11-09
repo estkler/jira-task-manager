@@ -1,9 +1,9 @@
-# Jira Task Manager
+# Jira Tasklet
 
 A native Windows desktop client for personal Jira tasks, built with the Win32 API.
 No third-party UI or runtime libraries are required.
 
-Version: **0.9.31**.
+Version: **0.9.32**.
 
 Features include task search and sorting, assigned/reported scopes, status filters,
 Jira workflow transitions, encrypted local notes and completion templates, Jira
@@ -25,6 +25,15 @@ checkbox captions follow the active theme. Completion feedback never substitutes
 an operation label for the actual Jira status or automatically retries a POST.
 
 ## Updates
+
+Version 0.9.32 renames the app to Jira Tasklet and adds dimmed tasks, optional
+All/Done tabs, due dates with an optional time bar, task-title/link copying,
+animated task switching, updated settings and a continuous workday timer.
+Jira polling now uses a paginated revision index with changed-detail batches,
+serialized requests and rate-limit cooldown. A DPAPI-encrypted snapshot cache
+reduces detail loading after restarts; interface changes do not trigger Jira reads.
+Automatic refresh pauses on Windows lock/sleep by default. Token fragments and
+local token labels are not displayed; credentials stay in Windows Credential Manager.
 
 Use Settings → About → Check for updates. The app checks stable releases in
 this repository only when requested; it does not add background update polling.
@@ -59,7 +68,8 @@ See the application README for detailed behavior and storage information.
 
 ## Compatibility and privacy
 
-The display name and executable are Jira Task Manager. Internal storage remains
+The display name is Jira Tasklet. The executable remains `Jira Task Manager.exe` and
+the update channel keeps its existing asset names for compatibility. Internal storage remains
 under `%LOCALAPPDATA%/Task Manager` so existing settings, encrypted notes,
 completion templates and the workday timer stay intact. Jira tokens remain in
 Windows Credential Manager; they are not stored in this repository.

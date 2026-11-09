@@ -16,3 +16,7 @@ settings.ini
 *.dmp
 *.zip
 *.bak
+*.jira-cache.dat
+*.note_*.dat
+bookmarks-*.dat
+dimmed-*.dat

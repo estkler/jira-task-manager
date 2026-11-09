@@ -13,6 +13,7 @@ static BOOL WINAPI HidePopoverFixture(HWND window,INT show){(void)window;(void)s
 #undef SetWindowPos
 static void tab_double_click(int tab){WindowProcedure(g_window,WM_COMMAND,MAKEWPARAM(IDC_TAB_ALL+tab,BN_DOUBLECLICKED),0);}
 int main(void){
+    g_show_all_tab=TRUE; /* Explicit opt-in: activity navigation includes the All tab. */
     g_instance=GetModuleHandleW(NULL);g_dpi=96;g_russian=TRUE;g_tab=0;RecreateBrushes();UpdateFonts();
     INITCOMMONCONTROLSEX common={sizeof(common),ICC_LISTVIEW_CLASSES|ICC_STANDARD_CLASSES};assert(InitCommonControlsEx(&common));
     g_window=CreateWindowExW(0,L"STATIC",L"",WS_POPUP,30000,30000,740,550,NULL,NULL,g_instance,NULL);assert(g_window);CreateControls();

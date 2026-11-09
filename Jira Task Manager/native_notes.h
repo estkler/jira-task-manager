@@ -2,6 +2,8 @@
 #define FTASKS_NATIVE_NOTES_H
 
 #include <windows.h>
+/* Caller owns the complete returned UTF-16 text and releases it with free(). */
+BOOL NativeNoteLoadAllocated(const wchar_t *settings_path,const wchar_t *account,const wchar_t *issue_key,wchar_t **note);
 
 BOOL NativeNoteLoad(const wchar_t *settings_path,const wchar_t *account,const wchar_t *issue_key,wchar_t *note,size_t capacity);
 BOOL NativeNoteSave(const wchar_t *settings_path,const wchar_t *account,const wchar_t *issue_key,const wchar_t *note);
