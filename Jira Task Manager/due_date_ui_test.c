@@ -131,6 +131,12 @@ int main(int argc,char **argv)
     SYSTEMTIME updated=g_updated_time;g_russian=TRUE;due_today.wDay=7;UpdateDueDateDay();
     wchar_t label[96];ListView_GetItemText(g_list,0,DUE_COLUMN,label,96);assert(wcsstr(label,L"Просрочено"));
     assert(!memcmp(&updated,&g_updated_time,sizeof(updated))&&"Local midnight must not pretend Jira has refreshed");
+    g_due_bar_mode=TRUE;g_russian=TRUE;const wchar_t *original_due=tasks[1].due_date;ULONGLONG original_created=tasks[1].created_utc;int amount;
+    tasks[1].due_date=L"2026-06-05";tasks[1].created_utc=NativeCommentUtcTime(L"2026-06-09T12:10:00Z");assert(TaskDueBarAmount(&tasks[1],&amount)&&amount==1000);
+    tasks[1].due_date=L"2099-11-12";tasks[1].created_utc=0;assert(TaskDueBarAmount(&tasks[1],&amount)&&amount==-1);
+    int unknown_row=-1;for(int row=0;row<ListView_GetItemCount(g_list);row++)if(TaskIndexAtRow(row)==1)unknown_row=row;
+    assert(unknown_row>=0&&TaskDueDateInfoTip(unknown_row,bar_tip,512)&&wcsstr(bar_tip,L"заполнение недоступно"));
+    tasks[1].due_date=original_due;tasks[1].created_utc=original_created;
     for(int i=0;i<5;i++)tasks[i].due_date=NULL;RefreshTaskList();assert(ListView_GetColumnWidth(g_list,DUE_COLUMN)==0);
     g_tasks=NULL;g_task_count=0;DestroyWindow(g_window);DeleteFileW(g_settings_path);
     puts("Due UI: before-status column, unchanged rows, read-only hit targets, full tooltip, RU/EN/themes/DPI, rollover and empty state passed");

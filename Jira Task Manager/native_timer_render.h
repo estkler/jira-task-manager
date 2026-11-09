@@ -8,6 +8,7 @@
 #include <wincodec.h>
 static HFONT g_timer_bold_font;
 static BOOL g_timer_overrun;
+static int g_timer_bar_amount;
 static wchar_t g_timer_numbers[48];
 static struct {HBITMAP bitmap;UINT width,height;BOOL attempted;} g_timer_emoji;
 static void TimerEmojiFree(void)
@@ -61,10 +62,11 @@ static int TimerNumberSlotWidthForMode(HDC dc,BOOL text)
     GetTextExtentPoint32W(dc,sample,(int)wcslen(sample),&bold);SelectObject(dc,old);
     return max(normal.cx,bold.cx)+D(3);
 }
-static int TimerNumberSlotWidth(HDC dc){return TimerNumberSlotWidthForMode(dc,g_text_time);}
+static int TimerNumberSlotWidth(HDC dc){return g_bar_time?D(110):TimerNumberSlotWidthForMode(dc,g_text_time);}
 static int TimerReservedWidth(HDC dc)
 {
     if(!g_timer_overrun){
+        if(g_bar_time)return D(114);
         HGDIOBJ old=SelectObject(dc,g_timer_font);SIZE number={0};
         GetTextExtentPoint32W(dc,g_timer_numbers,(int)wcslen(g_timer_numbers),&number);SelectObject(dc,old);
         return number.cx+D(4);
@@ -78,7 +80,15 @@ static void DrawTimerCaption(HDC dc,RECT rect,COLORREF ordinary)
     HGDIOBJ old=SelectObject(dc,g_timer_overrun?g_timer_bold_font:g_timer_font);
     int number_width=TimerNumberSlotWidth(dc);RECT numbers=rect;numbers.right=min(rect.right,rect.left+number_width);
     SetTextColor(dc,g_timer_overrun?(g_dark?RGB(255,111,116):RGB(190,30,40)):ordinary);
-    DrawTextW(dc,g_timer_numbers,-1,&numbers,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
+    if(g_bar_time){
+        int width=min(D(110),max(0,numbers.right-numbers.left)),height=D(6),y=rect.top+(rect.bottom-rect.top-height)/2;
+        HRGN shape=width?CreateRoundRectRgn(rect.left,y,rect.left+width+1,y+height+1,height,height):NULL;
+        if(shape){HBRUSH track=CreateSolidBrush(g_dark?RGB(66,70,76):RGB(224,229,235));
+            HBRUSH fill=CreateSolidBrush(g_timer_overrun?(g_dark?RGB(255,111,116):RGB(190,30,40)):AccentColor());
+            FillRgn(dc,shape,track);int saved=SaveDC(dc);if(saved){IntersectClipRect(dc,rect.left,y,rect.left+MulDiv(width,g_timer_bar_amount,1000),y+height+1);FillRgn(dc,shape,fill);RestoreDC(dc,saved);}
+            DeleteObject(track);DeleteObject(fill);DeleteObject(shape);
+        }
+    }else DrawTextW(dc,g_timer_numbers,-1,&numbers,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
     if(g_timer_overrun){
         SelectObject(dc,g_small_font);SetTextColor(dc,TextColor());
         RECT caption=rect;caption.left=min(rect.right,rect.left+number_width);

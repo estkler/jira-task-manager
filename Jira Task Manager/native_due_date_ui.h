@@ -75,10 +75,17 @@ static void DrawTaskDueBar(HDC dc,RECT cell,const TaskItem *task,int kind,int am
     int width=min(D(88),cell.right-cell.left),height=D(6);if(width<=0||height<=0)return;
     int x=cell.left+(cell.right-cell.left-width)/2,y=cell.top+(cell.bottom-cell.top-height)/2;
     HRGN shape=CreateRoundRectRgn(x,y,x+width+1,y+height+1,height,height);if(!shape)return;
-    COLORREF color=IsDoneStatus(task->status)?MutedColor():kind==NATIVE_DUE_NORMAL?AccentColor():TaskDueColor(kind);
+    COLORREF color=amount<0||IsDoneStatus(task->status)?MutedColor():kind==NATIVE_DUE_NORMAL?AccentColor():TaskDueColor(kind);
     HBRUSH track=CreateSolidBrush(g_dark?RGB(66,70,76):RGB(224,229,235)),fill=CreateSolidBrush(color);
     FillRgn(dc,shape,track);int saved=SaveDC(dc);
-    if(saved){IntersectClipRect(dc,x,y,x+MulDiv(width,amount,1000),y+height+1);FillRgn(dc,shape,fill);RestoreDC(dc,saved);}
+    if(saved){
+        if(amount>=0){IntersectClipRect(dc,x,y,x+MulDiv(width,amount,1000),y+height+1);FillRgn(dc,shape,fill);}
+        else{ /* Unknown duration is a bar, but never an invented percentage. */
+            int dot=max(1,D(2)),middle=x+width/2;
+            for(int i=-1;i<=1;i++){RECT r={middle+i*D(6)-dot/2,y+(height-dot)/2,middle+i*D(6)-dot/2+dot,y+(height-dot)/2+dot};FillRect(dc,&r,fill);}
+        }
+        RestoreDC(dc,saved);
+    }
     DeleteObject(track);DeleteObject(fill);DeleteObject(shape);
 }
 static void DrawTaskDueDate(HDC dc,int row)
@@ -99,7 +106,8 @@ static BOOL TaskDueDateInfoTip(int row,wchar_t *text,size_t capacity)
     if(index<0||index>=g_task_count||!TaskDueDescribe(&g_tasks[index],&due))return FALSE;
     int amount;BOOL bar=TaskDueBarAmount(&g_tasks[index],&amount);
     _snwprintf_s(text,capacity,_TRUNCATE,L"%ls%ls\n%ls",due.tooltip,
-        bar?(g_russian?L"\nВремя от создания задачи до срока":L"\nTime from creation to due date"):L"",
+        bar?(amount<0?(g_russian?L"\nНет корректной даты создания: заполнение недоступно":L"\nCreation date unavailable: fill cannot be calculated"):
+            (g_russian?L"\nВремя от создания задачи до срока":L"\nTime from creation to due date")):L"",
         g_due_bar_mode?(g_russian?L"ПКМ — показать даты":L"Right-click to show dates"):(g_russian?L"ПКМ — показать бары":L"Right-click to show bars"));return TRUE;
 }
 static void UpdateDueDateDay(void)

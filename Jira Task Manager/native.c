@@ -25,7 +25,7 @@
 #include "native_refresh_interval.h"
 #include "native_auto_refresh.h"
 
-#define APP_VERSION L"0.9.32"
+#define APP_VERSION L"0.9.33"
 #define APP_TITLE TASK_MANAGER_TITLE
 #define WM_TRAYICON (WM_APP + 1)
 
@@ -265,6 +265,7 @@ static HBRUSH g_popover_brush;
 static BOOL g_dark;
 static BOOL g_russian = TRUE;
 static BOOL g_text_time;
+static BOOL g_bar_time;
 static int g_comments_mode; /* 0 hidden, 1 Jira, 2 local */
 static int g_comments_visual_mode,g_comments_reveal; /* visual transition, 0..1000 */
 static int g_tab = 1;
@@ -278,6 +279,7 @@ static BOOL g_allow_close;
 static NativeLifecycle g_lifecycle;
 static const wchar_t *g_shutdown_reason=L"normal";
 static NOTIFYICONDATAW g_tray;
+static BOOL g_update_notice;
 static wchar_t g_settings_path[MAX_PATH];
 static NativeBookmarks g_bookmarks;
 static HWND g_bookmark_button,g_bookmark_caption;
@@ -479,6 +481,7 @@ static BOOL SaveSettings(void)
     saved=WritePrivateProfileStringW(L"Interface", L"Russian", g_russian ? L"1" : L"0", g_settings_path)&&saved;
     saved=WritePrivateProfileStringW(L"Interface",L"DueDateBar",g_due_bar_mode?L"1":L"0",g_settings_path)&&saved;
     saved=WritePrivateProfileStringW(L"Timer", L"Text", g_text_time ? L"1" : L"0", g_settings_path)&&saved;
+    saved=WritePrivateProfileStringW(L"Timer", L"Format", g_bar_time?L"2":g_text_time?L"1":L"0", g_settings_path)&&saved;
     swprintf(value,64,L"%d",g_comments_mode);
     saved=WritePrivateProfileStringW(L"Interface",L"CommentsMode",value,g_settings_path)&&saved;
     swprintf(value, 64, L"%llu", (unsigned long long)g_workday_started);
@@ -506,6 +509,9 @@ static void LoadSettings(void)
     g_russian = GetPrivateProfileIntW(L"Interface", L"Russian", 1, g_settings_path) != 0;
     g_due_bar_mode=GetPrivateProfileIntW(L"Interface",L"DueDateBar",0,g_settings_path)!=0;
     g_text_time = GetPrivateProfileIntW(L"Timer", L"Text", 0, g_settings_path) != 0;
+    int timer_mode=GetPrivateProfileIntW(L"Timer",L"Format",g_text_time?1:0,g_settings_path);
+    if(timer_mode<0||timer_mode>2)timer_mode=g_text_time?1:0;
+    g_bar_time=timer_mode==2;g_text_time=timer_mode==1;
     g_comments_mode=GetPrivateProfileIntW(L"Interface",L"CommentsMode",0,g_settings_path);
     if(g_comments_mode<0||g_comments_mode>2)g_comments_mode=0;
     GetPrivateProfileStringW(L"Timer", L"Started", L"0", value, 64, g_settings_path);
@@ -794,6 +800,7 @@ static void UpdateTimer(void)
         }
     }
     ULONGLONG elapsed_seconds = WorkdayElapsedSeconds(g_workday_started/10000000ULL,now/10000000ULL);
+    g_timer_bar_amount=elapsed_seconds>=WORKDAY_DURATION_SECONDS?1000:(int)(elapsed_seconds*1000/WORKDAY_DURATION_SECONDS);
     unsigned long long hours = elapsed_seconds / 3600ULL;
     unsigned long long minutes = (elapsed_seconds / 60ULL) % 60ULL;
     unsigned long long seconds = elapsed_seconds % 60ULL;
@@ -984,8 +991,10 @@ static void LayoutFooterControls(int width,int height)
         wchar_t label[128];UpdatedTimestamp(label,_countof(label));
         HDC measure=GetDC(g_window);HGDIOBJ saved=SelectObject(measure,g_small_font);SIZE size;
         GetTextExtentPoint32W(measure,label,(int)wcslen(label),&size);
+        SIZE minimum_stamp;GetTextExtentPoint32W(measure,L"88:88:88",8,&minimum_stamp);
         SelectObject(measure,saved);
-        int number_slot=max(TimerNumberSlotWidthForMode(measure,FALSE),TimerNumberSlotWidthForMode(measure,TRUE))+D(1);
+        int bar_slot=min(D(110),max(0,right-D(8)-margin-D(10)-minimum_stamp.cx-D(4)));
+        int number_slot=max(bar_slot,max(TimerNumberSlotWidthForMode(measure,FALSE),TimerNumberSlotWidthForMode(measure,TRUE)))+D(1);
         available=min(size.cx+D(3),max(0,right-D(8)-margin-D(10)-number_slot));
         label_left=right-D(8)-available;
         timer_width=min(timer_width,max(0,label_left-margin-D(10)));
@@ -4322,7 +4331,10 @@ static POINT TimerMenuAnchor(RECT timer_rect,RECT visible_frame)
 static void ToggleTimerFormat(void)
 {
     if(g_update_handoff)return;
-    g_text_time=!g_text_time;SaveSettings();UpdateTimer();
+    if(g_bar_time){g_bar_time=g_text_time=FALSE;}
+    else if(g_text_time){g_text_time=FALSE;g_bar_time=TRUE;}
+    else g_text_time=TRUE;
+    SaveSettings();UpdateTimer();
     RECT client;GetClientRect(g_window,&client);LayoutControls(client.right,client.bottom);
 }
 
@@ -4383,7 +4395,7 @@ static void ShowJiraActivityNotification(int task_count,const JiraItem *first_ta
         size_t used=wcslen(notice.szInfo);if(!mixed){used=0;notice.szInfo[0]=0;}
         if(first_status)_snwprintf_s(notice.szInfo+used,_countof(notice.szInfo)-used,_TRUNCATE,L"%.40ls: %.54ls → %.54ls",first_status->key,statuses->previous,first_status->status_name);
         if(status_count>1){used=wcslen(notice.szInfo);swprintf(notice.szInfo+used,_countof(notice.szInfo)-used,g_russian?L" · ещё %d":L" · %d more",status_count-1);}
-        Shell_NotifyIconW(NIM_MODIFY,&notice);return;
+        if(Shell_NotifyIconW(NIM_MODIFY,&notice))g_update_notice=FALSE;return;
     }
     const JiraItem *first=comment_count?first_comment:first_task;int count=comment_count?comment_count:task_count;
     wcscpy_s(notice.szInfoTitle,_countof(notice.szInfoTitle),combined?(g_russian?L"Новые задачи и комментарии Jira":L"New Jira tasks and comments"):
@@ -4393,7 +4405,7 @@ static void ShowJiraActivityNotification(int task_count,const JiraItem *first_ta
         swprintf(notice.szInfo,_countof(notice.szInfo),L"%ls — %.180ls",first->key,first->summary);
     else swprintf(notice.szInfo,_countof(notice.szInfo),comment_count?(g_russian?L"Задач с новыми комментариями: %d":L"Tasks with new comments: %d"):
         (g_russian?L"Добавлено задач: %d":L"New tasks: %d"),count);
-    Shell_NotifyIconW(NIM_MODIFY,&notice);
+    if(Shell_NotifyIconW(NIM_MODIFY,&notice))g_update_notice=FALSE;
 }
 
 static void EndStartEdit(void)
@@ -4638,7 +4650,7 @@ static void UpdateTooltips(void)
     const wchar_t *ru[]={L"Фильтр статусов этой вкладки",L"Обновить задачи Jira",g_comments_mode==0?L"Без комментариев → комментарии Jira":g_comments_mode==1?L"Комментарии Jira → локальные заметки":L"Локальные заметки → без комментариев",L"Переключить светлую / тёмную тему",L"Switch language / Язык",L"О приложении и подключении",L"ЛКМ — меню таймера\nПКМ — переключить цифры / слова",g_scope_tip[0],g_scope_tip[1]};
     const wchar_t *en[]={L"Status filter for this tab",L"Refresh Jira tasks",g_comments_mode==0?L"No comments → Jira comments":g_comments_mode==1?L"Jira comments → local notes":L"Local notes → no comments",L"Switch light / dark theme",L"Язык / Switch language",L"About and connection",L"Left-click — timer menu\nRight-click — switch digital / text",g_scope_tip[0],g_scope_tip[1]};
     for(int i=0;i<9;i++){
-        TOOLINFOW tip={0};tip.cbSize=sizeof(tip)-sizeof(void*);tip.uFlags=TTF_IDISHWND|TTF_SUBCLASS;tip.hwnd=g_window;tip.uId=(UINT_PTR)buttons[i];tip.lpszText=(wchar_t*)(g_russian?ru[i]:en[i]);
+        TOOLINFOW tip={0};tip.cbSize=sizeof(tip)-sizeof(void*);tip.uFlags=TTF_IDISHWND|TTF_SUBCLASS;tip.hwnd=g_window;tip.uId=(UINT_PTR)buttons[i];tip.lpszText=buttons[i]==g_timer?LPSTR_TEXTCALLBACKW:(wchar_t*)(g_russian?ru[i]:en[i]);
         SendMessageW(g_tooltips,TTM_DELTOOLW,0,(LPARAM)&tip);
         SendMessageW(g_tooltips,TTM_ADDTOOLW,0,(LPARAM)&tip);
     }
@@ -4660,6 +4672,7 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
         SetTimer(window, 1, 1000, NULL);
         g_auto_was_allowed=FALSE;ResetAutomaticRefresh(TRUE);
         AddTrayIcon();
+        UpdateUiAutoInit();
         UpdateLastUpdated();
         RefreshWindowsPresence();
         StartWorkdayForInteractiveSession();
@@ -4734,7 +4747,7 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
         else if(w_param==947)SwitchSyncTick(GetTickCount64());
         else if(w_param==785){g_bookmark_notice_until=0;KillTimer(window,785);BookmarkPresent();UpdateLastUpdated();}
         else if(w_param==6)AnimateFooterTick();
-        else if(w_param==3)AutomaticRefreshTick();
+        else if(w_param==3){AutomaticRefreshTick();UpdateUiAutoTick();}
         else {UpdateTimer();if(w_param==1){UpdateCommentAttention(GetTickCount64());UpdateDueDateDay();}}
         return 0;
 
@@ -4803,6 +4816,11 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
 
     case WM_NOTIFY: {
         NMHDR *header = (NMHDR *)l_param;
+        if(header->hwndFrom==g_tooltips&&header->code==TTN_GETDISPINFOW&&header->idFrom==(UINT_PTR)g_timer){
+            static wchar_t timer_tip[256];
+            swprintf(timer_tip,_countof(timer_tip),g_russian?L"Прошло %ls из 9 часов\nЛКМ — меню таймера\nПКМ — цифры / слова / бар":L"Elapsed %ls of 9 hours\nLeft-click — timer menu\nRight-click — digital / text / bar",g_timer_numbers);
+            ((NMTTDISPINFOW*)l_param)->lpszText=timer_tip;return 0;
+        }
         if(header->hwndFrom==g_tooltips&&header->code==TTN_GETDISPINFOW&&header->idFrom==(UINT_PTR)g_list){
             NMTTDISPINFOW *tip=(NMTTDISPINFOW*)l_param;g_summary_tip[0]=0;POINT cursor;
             if(GetCursorPos(&cursor)){
@@ -4900,6 +4918,7 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
         if (l_param == WM_LBUTTONDBLCLK || l_param == NIN_BALLOONUSERCLICK) {
             ShowWindow(window, SW_RESTORE);
             SetForegroundWindow(window);
+            if(l_param==NIN_BALLOONUSERCLICK&&g_update_notice){g_update_notice=FALSE;OpenSettingsWindow();if(s_window)SettingsTab(1);}
         } else if (l_param == WM_RBUTTONUP || l_param == WM_CONTEXTMENU) {
             ShowTrayMenu();
         }

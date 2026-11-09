@@ -3,7 +3,7 @@
 A native Windows desktop client for personal Jira tasks, built with the Win32 API.
 No third-party UI or runtime libraries are required.
 
-Version: **0.9.32**.
+Version: **0.9.33**.
 
 Features include task search and sorting, assigned/reported scopes, status filters,
 Jira workflow transitions, encrypted local notes and completion templates, Jira
@@ -35,8 +35,12 @@ reduces detail loading after restarts; interface changes do not trigger Jira rea
 Automatic refresh pauses on Windows lock/sleep by default. Token fragments and
 local token labels are not displayed; credentials stay in Windows Credential Manager.
 
-Use Settings → About → Check for updates. The app checks stable releases in
-this repository only when requested; it does not add background update polling.
+Since 0.9.33, the app checks stable releases in this repository shortly after startup
+and once per 24 hours while running. It defers while the computer is locked/asleep
+or Jira/account/updater work is busy. Offline failures retry quietly after an hour.
+One quiet Windows notice is shown per newer version; clicking it opens About.
+Use Settings → About → Update for manual checking, download and confirmed installation.
+Older versions require their existing Check for updates action once to obtain 0.9.33.
 Download and installation are separate actions. Installation asks for confirmation
 and restarts the app only after its draft/state-safety checks pass. The old EXE is
 retained under a unique backup name; settings, encrypted notes, credentials and the

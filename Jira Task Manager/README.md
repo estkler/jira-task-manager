@@ -51,10 +51,12 @@ Programs and Startup shortcuts migrate to Jira Tasklet.lnk while retaining launc
 The installed EXE, internal resource identity and update asset names remain compatible with Jira Task Manager;
 no data or credential migration is needed.
 
-## Current version — 0.9.32
+## Current version — 0.9.33
 
-Manual native updates are available in Settings → About. Checking never runs at
-startup or on a background timer. A newer stable GitHub release offers a download,
+Native updates are available in Settings → About → Update. Discovery checks run
+shortly after startup and once per 24 hours, defer while locked/asleep or busy,
+and retry quietly after an hour on network failure. One quiet Windows notice
+per newer version opens About when clicked. A newer stable GitHub release offers a download,
 then a separately confirmed install/restart. Installation is blocked by active
 Jira/account requests, completion dialogs, comment drafts (including detached
 windows), note-save failures, active edits, or unsaved settings. State-save or

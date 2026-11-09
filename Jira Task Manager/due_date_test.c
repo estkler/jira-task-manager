@@ -30,8 +30,10 @@ int main(void)
     assert(NativeDueProgress(created,L"2026-11-12",created+(end-created)/2,&amount)&&amount>=499&&amount<=500);
     assert(NativeDueProgress(created,L"2026-11-12",end,&amount)&&amount==1000);
     assert(NativeDueProgress(created,L"2026-11-12",end+10000000,&amount)&&amount==1000);
-    assert(!NativeDueProgress(0,L"2026-11-12",end,&amount));
-    assert(!NativeDueProgress(end+1,L"2026-11-12",end,&amount));
+    assert(NativeDueProgress(0,L"2026-11-12",end,&amount)&&amount==1000);
+    assert(NativeDueProgress(end+1,L"2026-11-12",end,&amount)&&amount==1000&&"Past due must stay a full bar even when Jira creation is after deadline");
+    assert(NativeDueProgress(0,L"2026-11-12",end-1,&amount)&&amount==-1&&"A future deadline without creation must remain a bar with explicitly unknown fill");
+    assert(NativeDueProgress(end+1,L"2026-11-12",end-1,&amount)&&amount==-1);
     assert(!NativeDueProgress(created,L"bad",end,&amount));
     puts("Due dates: strict Gregorian date-only parsing, leap/year boundaries, RU/EN states and completed neutrality passed");
 }

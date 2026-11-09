@@ -72,7 +72,7 @@ static void test_update_about_controls(HWND settings){
     assert(!u_work&&u_state==UPDATE_UI_IDLE);SettingsTab(1);wchar_t text[256];
     for(int language=0;language<2;language++){
         g_russian=language;UpdateSettingsLanguage();GetWindowTextW(GetDlgItem(settings,242),text,256);
-        assert(!wcscmp(text,language?L"Проверить обновления":L"Check for updates"));GetWindowTextW(GetDlgItem(settings,235),text,256);assert(wcsstr(text,L"GitHub Releases")&&!wcsstr(text,L"Native"));
+        assert(!wcscmp(text,language?L"Обновить":L"Update"));GetWindowTextW(GetDlgItem(settings,235),text,256);assert(wcsstr(text,L"GitHub Releases")&&!wcsstr(text,L"Native"));
     }
     update_fixture_gate=CreateEventW(NULL,TRUE,FALSE,NULL);assert(update_fixture_gate);
     UpdateUiBeginCheck(settings);assert(u_state==UPDATE_UI_CHECKING&&u_work);UpdateWork *first=u_work;

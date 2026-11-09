@@ -4,6 +4,8 @@
 typedef enum UpdateUiState {UPDATE_UI_IDLE,UPDATE_UI_CHECKING,UPDATE_UI_CURRENT,UPDATE_UI_AVAILABLE,UPDATE_UI_DOWNLOADING,UPDATE_UI_READY,UPDATE_UI_APPLYING,UPDATE_UI_ERROR} UpdateUiState;
 typedef struct UpdateWork {
     volatile LONG references;UpdateCancel cancel;UINT generation;int action;
+    BOOL background;
+    UpdateUiState previous_state;
     UpdateStatus status;UpdateVersion current;UpdateRelease release;UpdateStage stage;
     HWND owner;HANDLE thread,ready,helper;
 } UpdateWork;
@@ -15,6 +17,9 @@ static UpdateRelease u_release;
 static UpdateStage u_stage;
 static UpdateStatus u_error;
 static BOOL u_no_release,u_lock_initialized;
+static BOOL u_local_newer;
+static ULONGLONG u_auto_due;
+static wchar_t u_notified_memory[64];
 #define u_handoff g_update_handoff
 static volatile LONG u_shutdown;
 static HANDLE u_helper;
@@ -38,7 +43,7 @@ static BOOL UpdateInstallAllowed(wchar_t *reason,size_t capacity){
     }
     if(reason&&capacity)wcsncpy_s(reason,capacity,message?message:L"",_TRUNCATE);return !message;
 }
-static BOOL UpdateUiBusy(void){return u_state==UPDATE_UI_CHECKING||u_state==UPDATE_UI_DOWNLOADING||u_state==UPDATE_UI_APPLYING;}
+static BOOL UpdateUiBusy(void){return (u_state==UPDATE_UI_CHECKING&&(!u_work||!u_work->background))||u_state==UPDATE_UI_DOWNLOADING||u_state==UPDATE_UI_APPLYING;}
 static void UpdateWorkRelease(UpdateWork *work){
     if(!work||InterlockedDecrement(&work->references))return;
     if(work->thread)CloseHandle(work->thread);if(work->ready)CloseHandle(work->ready);if(work->helper)CloseHandle(work->helper);
@@ -55,6 +60,13 @@ static void UpdateStopHelper(HANDLE helper){
     if(helper&&WaitForSingleObject(helper,0)==WAIT_TIMEOUT&&TerminateProcess(helper,UPDATE_CANCELLED))WaitForSingleObject(helper,200);
 }
 static void UpdateUiCancel(void){
+    if(!u_shutdown&&!u_handoff&&u_work&&u_work->background){u_settings=NULL;return;}
+    if(!u_shutdown&&!u_handoff&&!u_work){
+        ++u_generation; /* Detach invalidates queued manual results, not cached discovery. */
+        if(u_state==UPDATE_UI_READY){UpdateStageCleanup(&u_stage);u_state=u_release.asset_id?UPDATE_UI_AVAILABLE:UPDATE_UI_IDLE;}
+        u_settings=NULL;u_reason[0]=0;return;
+    }
+    if(u_work&&u_work->action==0)u_auto_due=GetTickCount64()+3600000ULL;
     ++u_generation;
     if(u_work){InterlockedExchange(&u_work->cancel.cancelled,1);UpdateStopHelper(u_work->helper);UpdateWorkRelease(u_work);u_work=NULL;}
     if(!u_handoff){UpdateStageCleanup(&u_stage);u_state=UPDATE_UI_IDLE;u_reason[0]=0;}
@@ -94,11 +106,30 @@ static BOOL UpdateUiStart(UpdateWork *work,HWND settings){
     if(!work->thread){UpdateStopHelper(work->helper);UpdateWorkRelease(work);UpdateWorkRelease(work);u_work=NULL;u_state=UPDATE_UI_ERROR;u_error=UPDATE_IO;UpdateUiRender(settings);return FALSE;}
     UpdateUiRender(settings);return TRUE;
 }
-static void UpdateUiBeginCheck(HWND settings){
+static void UpdateUiBeginCheckMode(HWND settings,BOOL background){
     if(UpdateUiBusy()||u_work||u_handoff||u_shutdown)return;
-    if(UpdateSettingsAccountBusy()){u_state=UPDATE_UI_ERROR;u_error=UPDATE_BUSY;UpdateUiRender(settings);return;}
+    if(UpdateSettingsAccountBusy()){if(!background){u_state=UPDATE_UI_ERROR;u_error=UPDATE_BUSY;UpdateUiRender(settings);}return;}
     UpdateWork *work=calloc(1,sizeof(*work));if(!work)return;
-    UpdateStageCleanup(&u_stage);work->action=0;UpdateParseVersion(APP_VERSION,&work->current);u_reason[0]=0;u_state=UPDATE_UI_CHECKING;UpdateUiStart(work,settings);
+    UpdateStageCleanup(&u_stage);work->action=0;work->background=background;UpdateParseVersion(APP_VERSION,&work->current);u_reason[0]=0;
+    UpdateUiState previous=u_state;work->previous_state=previous;u_state=UPDATE_UI_CHECKING;u_auto_due=GetTickCount64()+24ULL*60*60*1000;
+    if(!UpdateUiStart(work,settings)){u_auto_due=GetTickCount64()+3600000ULL;if(background){u_state=previous;UpdateUiRender(u_settings);}}
+}
+static void UpdateUiBeginCheck(HWND settings){UpdateUiBeginCheckMode(settings,FALSE);}
+static void UpdateUiAutoInit(void){u_auto_due=GetTickCount64()+30000;u_notified_memory[0]=0;}
+static void UpdateUiAutoTick(void){
+    if(u_shutdown||u_handoff||!u_auto_due||GetTickCount64()<u_auto_due||u_work||g_jira_busy||g_refresh_presence.locked||g_refresh_presence.suspended||
+       u_state==UPDATE_UI_READY||u_state==UPDATE_UI_DOWNLOADING||u_state==UPDATE_UI_APPLYING||UpdateSettingsAccountBusy())return;
+    UpdateUiBeginCheckMode(u_settings,TRUE);
+}
+static void UpdateUiNotifyAvailable(void){
+    wchar_t version[64],previous[64];swprintf(version,64,L"%lu.%lu.%lu",u_release.version.major,u_release.version.minor,u_release.version.patch);
+    GetPrivateProfileStringW(L"Updates",L"NotifiedVersion",L"",previous,64,g_settings_path);
+    if(!wcscmp(version,previous)){wcscpy_s(u_notified_memory,64,version);return;}
+    if(!wcscmp(version,u_notified_memory)){WritePrivateProfileStringW(L"Updates",L"NotifiedVersion",version,g_settings_path);return;}
+    NOTIFYICONDATAW notice=g_tray;notice.uFlags=NIF_INFO;notice.dwInfoFlags=NIIF_INFO|NIIF_NOSOUND;
+    wcscpy_s(notice.szInfoTitle,_countof(notice.szInfoTitle),g_russian?APP_TITLE L": доступно обновление":APP_TITLE L": update available");
+    swprintf(notice.szInfo,_countof(notice.szInfo),g_russian?L"Версия %ls. Нажмите, чтобы открыть обновление приложения.":L"Version %ls. Click to open application updates.",version);
+    if(Shell_NotifyIconW(NIM_MODIFY,&notice)){g_update_notice=TRUE;wcscpy_s(u_notified_memory,64,version);WritePrivateProfileStringW(L"Updates",L"NotifiedVersion",version,g_settings_path);}
 }
 static void UpdateUiBeginDownload(HWND settings){
     if(u_state!=UPDATE_UI_AVAILABLE||u_work||UpdateSettingsAccountBusy()||u_handoff||u_shutdown)return;
@@ -126,12 +157,18 @@ static void UpdateUiBeginInstall(HWND settings){
 }
 static BOOL UpdateUiHandleMessage(UINT message,WPARAM wp,LPARAM lp){
     (void)wp;if(message!=WM_UPDATE_RESULT&&message!=WM_UPDATE_READY)return FALSE;UpdateWork *work=(UpdateWork*)lp;if(!work)return TRUE;
-    BOOL current=work->generation==u_generation&&!u_shutdown&&u_settings&&IsWindow(u_settings);
+    BOOL current=work->generation==u_generation&&!u_shutdown&&(work->background||(u_settings&&IsWindow(u_settings)));
     if(work==u_work){u_work=NULL;UpdateWorkRelease(work);}
     if(current){
         u_error=work->status;u_reason[0]=0;
-        if(work->status!=UPDATE_OK&&work->status!=UPDATE_NONE){u_state=UPDATE_UI_ERROR;UpdateStopHelper(work->helper);}
-        else if(work->action==0){u_release=work->release;u_no_release=work->status==UPDATE_NONE&&!work->release.asset_id;u_state=work->status==UPDATE_OK?UPDATE_UI_AVAILABLE:UPDATE_UI_CURRENT;}
+        if(work->status!=UPDATE_OK&&work->status!=UPDATE_NONE){
+            u_auto_due=GetTickCount64()+3600000ULL;u_state=work->background?work->previous_state:UPDATE_UI_ERROR;UpdateStopHelper(work->helper);
+        }
+        else if(work->action==0){u_release=work->release;u_no_release=work->status==UPDATE_NONE&&!work->release.asset_id;
+            u_local_newer=work->status==UPDATE_NONE&&work->release.asset_id&&UpdateCompareVersion(work->current,work->release.version)>0;
+            u_auto_due=GetTickCount64()+24ULL*60*60*1000;u_state=work->status==UPDATE_OK?UPDATE_UI_AVAILABLE:UPDATE_UI_CURRENT;
+            if(work->background&&u_state==UPDATE_UI_AVAILABLE)UpdateUiNotifyAvailable();
+        }
         else if(work->action==1){UpdateStageCleanup(&u_stage);u_stage=work->stage;memset(&work->stage,0,sizeof(work->stage));u_state=UPDATE_UI_READY;}
         else if(!UpdateInstallAllowed(u_reason,_countof(u_reason))){UpdateStopHelper(work->helper);u_state=UPDATE_UI_ERROR;u_error=UPDATE_BUSY;}
         else{
@@ -153,17 +190,17 @@ static void UpdateUiShutdown(void){
     if(u_helper){CloseHandle(u_helper);u_helper=NULL;} /* committed child waits for normal process exit */
 }
 static void UpdateUiRender(HWND settings){
-    if(!settings||!IsWindow(settings))return;wchar_t status[256],button[128];const wchar_t *label=g_russian?L"Проверить обновления":L"Check for updates";
+    if(!settings||!IsWindow(settings))return;wchar_t status[256],button[128];const wchar_t *label=g_russian?L"Обновить":L"Update";
     switch(u_state){
     case UPDATE_UI_CHECKING:wcscpy_s(status,256,g_russian?L"Проверка обновлений…":L"Checking for updates…");break;
-    case UPDATE_UI_CURRENT:wcscpy_s(status,256,u_no_release?(g_russian?L"Пока нет опубликованных версий":L"No published releases yet"):(g_russian?L"Установлена актуальная версия":L"You have the latest version"));break;
-    case UPDATE_UI_AVAILABLE:swprintf(status,256,g_russian?L"Доступна версия %lu.%lu.%lu":L"Version %lu.%lu.%lu is available",u_release.version.major,u_release.version.minor,u_release.version.patch);label=g_russian?L"Скачать обновление":L"Download update";break;
+    case UPDATE_UI_CURRENT:wcscpy_s(status,256,u_no_release?(g_russian?L"Пока нет опубликованных версий":L"No published releases yet"):u_local_newer?(g_russian?L"Установлена версия новее опубликованной":L"Installed version is newer than the published release"):(g_russian?L"Установлена актуальная версия":L"You have the latest version"));break;
+    case UPDATE_UI_AVAILABLE:swprintf(status,256,g_russian?L"Доступна версия %lu.%lu.%lu":L"Version %lu.%lu.%lu is available",u_release.version.major,u_release.version.minor,u_release.version.patch);break;
     case UPDATE_UI_DOWNLOADING:wcscpy_s(status,256,g_russian?L"Скачивание и проверка файла…":L"Downloading and verifying…");break;
-    case UPDATE_UI_READY:wcscpy_s(status,256,u_reason[0]?u_reason:(g_russian?L"Файл проверен. Можно установить обновление.":L"Verified. Ready to install."));label=g_russian?L"Установить и перезапустить":L"Install and restart";break;
+    case UPDATE_UI_READY:wcscpy_s(status,256,u_reason[0]?u_reason:(g_russian?L"Файл проверен. Нажмите «Обновить» для установки и перезапуска.":L"Verified. Click Update to install and restart."));break;
     case UPDATE_UI_APPLYING:wcscpy_s(status,256,g_russian?L"Подготовка безопасного перезапуска…":L"Preparing a safe restart…");break;
     case UPDATE_UI_ERROR:wcscpy_s(status,256,u_reason[0]?u_reason:u_error==UPDATE_BUSY?(g_russian?L"Дождитесь завершения текущей операции.":L"Wait for the current operation."):u_error==UPDATE_INVALID?(g_russian?L"Файл или данные версии не прошли проверку.":L"Release or file verification failed."):u_error==UPDATE_NETWORK?(g_russian?L"Не удалось проверить обновления. Повторите позже.":L"Update request failed. Try again later."):(g_russian?L"Не удалось подготовить обновление.":L"Could not prepare the update."));break;
     default:wcscpy_s(status,256,g_russian?L"Обновления через GitHub Releases":L"Updates via GitHub Releases");break;
     }
-    wcscpy_s(button,128,label);SetWindowTextW(GetDlgItem(settings,235),status);SetWindowTextW(GetDlgItem(settings,242),button);EnableWindow(GetDlgItem(settings,242),!UpdateUiBusy()&&!UpdateSettingsAccountBusy());
+    wcscpy_s(button,128,label);SetWindowTextW(GetDlgItem(settings,235),status);SetWindowTextW(GetDlgItem(settings,242),button);EnableWindow(GetDlgItem(settings,242),!u_work&&!UpdateUiBusy()&&!UpdateSettingsAccountBusy());
     LayoutSettings();
 }

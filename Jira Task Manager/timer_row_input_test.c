@@ -62,11 +62,11 @@ static void footer_stability(void){
     for(int dpi=96;dpi<=192;dpi+=48)for(int density=0;density<2;density++)for(int ru=0;ru<2;ru++)for(int dark=0;dark<2;dark++){
         g_dpi=dpi;g_density=density;g_russian=ru;g_dark=dark;UpdateFonts();RecreateBrushes();
         SetWindowPos(g_window,NULL,0,0,D(510),D(550),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);g_footer_right=0;
-        g_text_time=FALSE;UpdateTimer();LayoutFooterControls(D(510),D(550));RECT baseline;GetWindowRect(g_updated,&baseline);
+        g_text_time=g_bar_time=FALSE;UpdateTimer();LayoutFooterControls(D(510),D(550));RECT baseline;GetWindowRect(g_updated,&baseline);
         wchar_t caption[128],actual[128];GetWindowTextW(g_updated,caption,128);
         ULONGLONG pixels=StampPixels();
         for(int mode=0;mode<6;mode++){
-            g_text_time=mode%2;UpdateTimer();stamp_moves=stamp_texts=0;stamp_copies=stamp_invalidated=FALSE;stamp_probe=TRUE;
+            g_text_time=mode%3==1;g_bar_time=mode%3==2;UpdateTimer();stamp_moves=stamp_texts=0;stamp_copies=stamp_invalidated=FALSE;stamp_probe=TRUE;
             LayoutFooterControls(D(510),D(550));stamp_probe=FALSE;
             RECT after;GetWindowRect(g_updated,&after);GetWindowTextW(g_updated,actual,128);
             assert(EqualRect(&baseline,&after)&&"Timer display mode must not move or resize the last-updated region");
@@ -92,7 +92,7 @@ static void footer_stability(void){
 }
 static void timer_input(void){
     for(int language=0;language<2;language++){
-        g_russian=language;g_text_time=FALSE;g_workday_started=input_now-(ULONGLONG)3723*10000000;ULONGLONG start=g_workday_started;UpdateTimer();
+        g_russian=language;g_text_time=g_bar_time=FALSE;g_workday_started=input_now-(ULONGLONG)3723*10000000;ULONGLONG start=g_workday_started;UpdateTimer();
         wchar_t text[128];GetWindowTextW(g_timer,text,128);assert(!wcscmp(text,L"01:02:03"));
         int menus=menu_count;SendMessageW(g_timer,WM_RBUTTONDOWN,MK_RBUTTON,MAKELPARAM(3,3));SendMessageW(g_timer,WM_RBUTTONUP,0,MAKELPARAM(3,3));
         assert(g_text_time&&"A real right-click on the timer must directly toggle its format");
@@ -100,9 +100,10 @@ static void timer_input(void){
         GetWindowTextW(g_timer,text,128);assert(!wcscmp(text,language?L"1ч 2м 3с":L"1h 2m 3s"));
         g_text_time=FALSE;LoadSettings();assert(g_text_time&&g_workday_started==start);
         SendMessageW(g_timer,WM_RBUTTONDOWN,MK_RBUTTON,MAKELPARAM(3,3));SendMessageW(g_timer,WM_RBUTTONUP,0,MAKELPARAM(3,3));
-        assert(!g_text_time&&g_workday_started==start&&GetPrivateProfileIntW(L"Timer",L"Text",1,g_settings_path)==0);
+        assert(!g_text_time&&g_bar_time&&g_workday_started==start&&GetPrivateProfileIntW(L"Timer",L"Text",1,g_settings_path)==0);
         GetWindowTextW(g_timer,text,128);assert(!wcscmp(text,L"01:02:03"));
-        SendMessageW(g_timer,WM_CONTEXTMENU,(WPARAM)g_timer,MAKELPARAM(-1,-1));assert(g_text_time&&"Keyboard context gesture provides the same format switch");
+        SendMessageW(g_timer,WM_CONTEXTMENU,(WPARAM)g_timer,MAKELPARAM(-1,-1));assert(!g_text_time&&!g_bar_time&&"Keyboard context gesture cycles bar back to numeric");
+        SendMessageW(g_timer,WM_CONTEXTMENU,(WPARAM)g_timer,MAKELPARAM(-1,-1));assert(g_text_time);
         SendMessageW(g_language,WM_RBUTTONUP,0,MAKELPARAM(3,3));assert(g_text_time);
         menus=menu_count;SendMessageW(g_window,WM_COMMAND,MAKEWPARAM(IDC_TIMER,BN_CLICKED),(LPARAM)g_timer);
         assert(menu_count==menus+1&&g_text_time&&g_workday_started==start);
@@ -117,7 +118,7 @@ static void footer_timestamp_fit(void)
         g_dpi=dpi;g_density=density;g_russian=ru;UpdateFonts();
         for(int width=300;width<=650;width++){
             SetWindowPos(g_window,NULL,0,0,D(width),D(550),SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
-            g_workday_started=input_now-3723ULL*10000000;g_text_time=FALSE;UpdateTimer();
+            g_workday_started=input_now-3723ULL*10000000;g_text_time=g_bar_time=FALSE;UpdateTimer();
             for(int mode=0;mode<2;mode++){
                 /* Input persistence is covered above; sweep geometry without thousands of INI writes. */
                 g_text_time=mode;UpdateTimer();g_footer_right=0;LayoutFooterControls(D(width),D(550));

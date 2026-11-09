@@ -30,8 +30,12 @@ static ULONGLONG NativeDueDeadlineUtc(const wchar_t *iso)
 static BOOL NativeDueProgress(ULONGLONG created,const wchar_t *iso,ULONGLONG now,int *permille)
 {
     ULONGLONG end=NativeDueDeadlineUtc(iso);
-    if(!permille||!created||end<=created)return FALSE;
-    *permille=now<=created?0:now>=end?1000:(int)((double)(now-created)/(double)(end-created)*1000.0);
+    if(!permille||!end)return FALSE;
+    /* Expiry is known independently of Jira's sometimes backdated/imported
+       creation timestamp. -1 means a future deadline with unknown duration. */
+    if(now>=end){*permille=1000;return TRUE;}
+    if(!created||end<=created){*permille=-1;return TRUE;}
+    *permille=now<=created?0:(int)((double)(now-created)/(double)(end-created)*1000.0);
     return TRUE;
 }
 static BOOL NativeDueDescribe(const wchar_t *iso,const SYSTEMTIME *today,BOOL done,BOOL russian,NativeDueText *out)
