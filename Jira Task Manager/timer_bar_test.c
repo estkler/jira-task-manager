@@ -7,7 +7,9 @@ static void bar_pixels(int elapsed)
     assert(g_timer_bar_amount==(elapsed>=9*3600?1000:MulDiv(elapsed,1000,9*3600)));
     HDC screen=GetDC(g_window),dc=CreateCompatibleDC(screen);HBITMAP bitmap=CreateCompatibleBitmap(screen,D(330),D(28));HGDIOBJ old=SelectObject(dc,bitmap);
     RECT rect={0,0,D(330),D(28)};FillRect(dc,&rect,g_window_brush);DrawTimerCaption(dc,rect,TextColor());
-    COLORREF left=GetPixel(dc,D(25),D(14)),right=GetPixel(dc,D(85),D(14));
+    HGDIOBJ font=SelectObject(dc,g_timer_font);SIZE digits;GetTextExtentPoint32W(dc,L"00:00:00",8,&digits);SelectObject(dc,font);
+    COLORREF left=GetPixel(dc,digits.cx/4,D(14)),right=GetPixel(dc,digits.cx*3/4,D(14));
+    if(elapsed<9*3600)assert(GetPixel(dc,digits.cx+D(3),D(14))==WindowColor()&&"The bar must occupy the width of the ordinary digital clock");
     assert(elapsed==4*3600+1800?left!=right:left==right);
     if(elapsed>=9*3600)assert(left==(g_dark?RGB(255,111,116):RGB(190,30,40)));
     SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);ReleaseDC(g_window,screen);

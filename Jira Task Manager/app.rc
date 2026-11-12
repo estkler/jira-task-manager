@@ -8,8 +8,8 @@
 504 RCDATA "Assets\\emoji-u1f917-NOTICE.txt"
 
 1 VERSIONINFO
- FILEVERSION 0,9,33,0
- PRODUCTVERSION 0,9,33,0
+ FILEVERSION 0,9,34,0
+ PRODUCTVERSION 0,9,34,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -22,11 +22,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Jira Tasklet"
             VALUE "FileDescription", "Jira Tasklet"
-            VALUE "FileVersion", "0.9.33"
+            VALUE "FileVersion", "0.9.34"
             VALUE "InternalName", "JiraTaskManager"
             VALUE "OriginalFilename", "Jira Task Manager.exe"
             VALUE "ProductName", "Jira Tasklet"
-            VALUE "ProductVersion", "0.9.33"
+            VALUE "ProductVersion", "0.9.34"
         END
     END
     BLOCK "VarFileInfo"

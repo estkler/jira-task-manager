@@ -51,7 +51,10 @@ Programs and Startup shortcuts migrate to Jira Tasklet.lnk while retaining launc
 The installed EXE, internal resource identity and update asset names remain compatible with Jira Task Manager;
 no data or credential migration is needed.
 
-## Current version — 0.9.33
+## Current version — 0.9.34
+
+The workday bar uses the measured width of the ordinary `00:00:00` digits in the
+current timer font. It scales with DPI/density and retains the nine-hour fill cap.
 
 Native updates are available in Settings → About → Update. Discovery checks run
 shortly after startup and once per 24 hours, defer while locked/asleep or busy,

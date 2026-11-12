@@ -25,7 +25,7 @@
 #include "native_refresh_interval.h"
 #include "native_auto_refresh.h"
 
-#define APP_VERSION L"0.9.33"
+#define APP_VERSION L"0.9.34"
 #define APP_TITLE TASK_MANAGER_TITLE
 #define WM_TRAYICON (WM_APP + 1)
 
@@ -993,7 +993,7 @@ static void LayoutFooterControls(int width,int height)
         GetTextExtentPoint32W(measure,label,(int)wcslen(label),&size);
         SIZE minimum_stamp;GetTextExtentPoint32W(measure,L"88:88:88",8,&minimum_stamp);
         SelectObject(measure,saved);
-        int bar_slot=min(D(110),max(0,right-D(8)-margin-D(10)-minimum_stamp.cx-D(4)));
+        int bar_slot=min(TimerBarWidth(measure),max(0,right-D(8)-margin-D(10)-minimum_stamp.cx-D(4)));
         int number_slot=max(bar_slot,max(TimerNumberSlotWidthForMode(measure,FALSE),TimerNumberSlotWidthForMode(measure,TRUE)))+D(1);
         available=min(size.cx+D(3),max(0,right-D(8)-margin-D(10)-number_slot));
         label_left=right-D(8)-available;

@@ -3,7 +3,7 @@
 A native Windows desktop client for personal Jira tasks, built with the Win32 API.
 No third-party UI or runtime libraries are required.
 
-Version: **0.9.33**.
+Version: **0.9.34**.
 
 Features include task search and sorting, assigned/reported scopes, status filters,
 Jira workflow transitions, encrypted local notes and completion templates, Jira

@@ -54,6 +54,12 @@ static BOOL TimerEmojiLoad(void)
     g_timer_emoji.bitmap=bitmap;g_timer_emoji.width=width;g_timer_emoji.height=height;return TRUE;
 }
 static const wchar_t *TimerHomeCaption(void){return g_russian?L" · Пора домой ":L" · Time to go home ";}
+static int TimerBarWidth(HDC dc)
+{
+    HGDIOBJ old=SelectObject(dc,g_timer_font);SIZE digits={0};
+    GetTextExtentPoint32W(dc,L"00:00:00",8,&digits);SelectObject(dc,old);
+    return digits.cx;
+}
 static int TimerNumberSlotWidthForMode(HDC dc,BOOL text)
 {
     const wchar_t *sample=text?(g_russian?L"88ч 88м 88с":L"88h 88m 88s"):L"88:88:88";
@@ -62,11 +68,11 @@ static int TimerNumberSlotWidthForMode(HDC dc,BOOL text)
     GetTextExtentPoint32W(dc,sample,(int)wcslen(sample),&bold);SelectObject(dc,old);
     return max(normal.cx,bold.cx)+D(3);
 }
-static int TimerNumberSlotWidth(HDC dc){return g_bar_time?D(110):TimerNumberSlotWidthForMode(dc,g_text_time);}
+static int TimerNumberSlotWidth(HDC dc){return g_bar_time?TimerBarWidth(dc):TimerNumberSlotWidthForMode(dc,g_text_time);}
 static int TimerReservedWidth(HDC dc)
 {
     if(!g_timer_overrun){
-        if(g_bar_time)return D(114);
+        if(g_bar_time)return TimerBarWidth(dc)+D(4);
         HGDIOBJ old=SelectObject(dc,g_timer_font);SIZE number={0};
         GetTextExtentPoint32W(dc,g_timer_numbers,(int)wcslen(g_timer_numbers),&number);SelectObject(dc,old);
         return number.cx+D(4);
@@ -81,7 +87,7 @@ static void DrawTimerCaption(HDC dc,RECT rect,COLORREF ordinary)
     int number_width=TimerNumberSlotWidth(dc);RECT numbers=rect;numbers.right=min(rect.right,rect.left+number_width);
     SetTextColor(dc,g_timer_overrun?(g_dark?RGB(255,111,116):RGB(190,30,40)):ordinary);
     if(g_bar_time){
-        int width=min(D(110),max(0,numbers.right-numbers.left)),height=D(6),y=rect.top+(rect.bottom-rect.top-height)/2;
+        int width=max(0,numbers.right-numbers.left),height=D(6),y=rect.top+(rect.bottom-rect.top-height)/2;
         HRGN shape=width?CreateRoundRectRgn(rect.left,y,rect.left+width+1,y+height+1,height,height):NULL;
         if(shape){HBRUSH track=CreateSolidBrush(g_dark?RGB(66,70,76):RGB(224,229,235));
             HBRUSH fill=CreateSolidBrush(g_timer_overrun?(g_dark?RGB(255,111,116):RGB(190,30,40)):AccentColor());
