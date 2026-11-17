@@ -25,7 +25,7 @@
 #include "native_refresh_interval.h"
 #include "native_auto_refresh.h"
 
-#define APP_VERSION L"0.9.34"
+#define APP_VERSION L"0.9.38"
 #define APP_TITLE TASK_MANAGER_TITLE
 #define WM_TRAYICON (WM_APP + 1)
 
@@ -62,6 +62,8 @@
 #define IDC_POPOVER_KEY 1045
 #define IDC_BOOKMARKS 1046
 #define IDC_BOOKMARK_CAPTION 1047
+#define IDC_INITIAL_RETRY 1048
+#define WM_INITIAL_LOAD (WM_APP+80)
 #define COMMENTS_COLUMN  3
 #define STATUS_COLUMN    4
 #define DUE_COLUMN       5
@@ -607,6 +609,7 @@ static int ScopeButtonWidth(HDC dc,BOOL reported)
     return max(D(36),D(14)+D(6)+measured.cx+D(16));
 }
 
+#include "native_startup.h"
 static void UpdateTabLabels(void)
 {
     HWND tabs[] = { g_tab_all, g_tab_current, g_tab_done };
@@ -618,7 +621,7 @@ static void UpdateTabLabels(void)
             if (g_tasks[i].active || (g_filter_masks[tab+(g_reported_scope?3:0)] & (1ull << g_tasks[i].status))) ++visible;
         }
         wchar_t label[80];
-        if (!g_show_tab_task_counts) wcscpy_s(label,80,names[tab]);
+        if (!g_show_tab_task_counts||InitialCountsUnknown()) wcscpy_s(label,80,names[tab]);
         else if (visible == total) swprintf(label, 80, L"%ls %d", names[tab], total);
         else swprintf(label, 80, L"%ls %d/%d", names[tab], visible, total);
         SetWindowTextW(tabs[tab], label);
@@ -789,6 +792,24 @@ static void SelectTaskScope(BOOL reported)
 }
 
 #include "native_timer_render.h"
+static const wchar_t *TimerTooltipText(void)
+{
+    static wchar_t text[256];
+    if(g_bar_time)
+        swprintf(text,_countof(text),g_russian?L"%d%% рабочего дня\nЛКМ — меню таймера\nПКМ — цифры / слова / бар":L"%d%% of the workday\nLeft-click — timer menu\nRight-click — digital / text / bar",g_timer_bar_amount/10);
+    else
+        swprintf(text,_countof(text),g_russian?L"Прошло %ls из 9 часов\nЛКМ — меню таймера\nПКМ — цифры / слова / бар":L"Elapsed %ls of 9 hours\nLeft-click — timer menu\nRight-click — digital / text / bar",g_timer_numbers);
+    return text;
+}
+
+static void RefreshVisibleTimerTooltip(void)
+{
+    if(!g_tooltips||!IsWindowVisible(g_tooltips))return;
+    TOOLINFOW current={.cbSize=sizeof(current)-sizeof(void*)};
+    if(SendMessageW(g_tooltips,TTM_GETCURRENTTOOLW,0,(LPARAM)&current)&&current.hwnd==g_window&&current.uId==(UINT_PTR)g_timer)
+        SendMessageW(g_tooltips,TTM_UPDATE,0,0);
+}
+
 static void UpdateTimer(void)
 {
     BOOL was_overrun=g_timer_overrun;
@@ -815,6 +836,7 @@ static void UpdateTimer(void)
     if(g_timer_overrun)
         wcscat_s(text,_countof(text),g_russian?L" · Пора домой \xD83E\xDD17":L" · Time to go home \xD83E\xDD17");
     SetWindowTextW(g_timer, text);
+    RefreshVisibleTimerTooltip();
     if(was_overrun!=g_timer_overrun&&g_window&&g_settings){
         RECT client;GetClientRect(g_window,&client);LayoutFooterControls(client.right,client.bottom);
     }
@@ -835,6 +857,8 @@ static void SetUpdatedCaption(int available)
     if(g_bookmarks.showing||g_bookmarks.editing||BookmarkNoticeVisible()){BookmarkFooterOverride();return;}
     wchar_t label[128];
     if(g_jira_busy)wcscpy_s(label,128,g_russian?L"Jira: загрузка…":L"Jira: loading…");
+    else if(g_initial_view==INITIAL_WAIT)wcscpy_s(label,128,g_russian?L"Jira: ожидание загрузки…":L"Jira: waiting to load…");
+    else if(g_initial_view==INITIAL_SIGNED_OUT)wcscpy_s(label,128,g_russian?L"Jira: подключитесь в настройках":L"Jira: connect in settings");
     else if(g_jira_stale)wcscpy_s(label,128,g_russian?L"Jira: ошибка · подробнее в ⋯":L"Jira: error · details in ⋯");
     else if(g_status_sync_warning)wcscpy_s(label,128,g_russian?L"Jira: статусы не подтверждены · подробнее в ⋯":L"Jira: statuses not confirmed · details in ⋯");
     else if(g_completion_notice_until>GetTickCount64())wcsncpy_s(label,128,g_completion_notice,_TRUNCATE);
@@ -1132,6 +1156,7 @@ static void LayoutControls(int width, int height)
     ReleaseDC(g_window, dc);
     LayoutFooterControls(width,height);
     LayoutBookmarkControls();
+    LayoutInitialView();
     InvalidateRect(g_window, NULL, FALSE);
 }
 
@@ -1388,7 +1413,7 @@ static void DrawOwnerButton(const DRAWITEMSTRUCT *draw)
 
 
     BOOL framed = id==IDC_REFRESH || id==IDC_COMMENTS ||
-        id==IDC_DENSITY || id==IDC_THEME || id==IDC_LANGUAGE || id==IDC_SETTINGS;
+        id==IDC_DENSITY || id==IDC_THEME || id==IDC_LANGUAGE || id==IDC_SETTINGS || id==IDC_INITIAL_RETRY;
     if(framed){
         HPEN border=CreatePen(PS_SOLID,1,hovered?AccentColor():(g_dark?RGB(67,76,88):RGB(174,174,174)));
         HGDIOBJ previous_pen=SelectObject(draw->hDC,border);
@@ -1870,6 +1895,7 @@ static LRESULT DrawListCustom(NMLVCUSTOMDRAW *custom)
             HBRUSH background = CreateSolidBrush(PanelColor());
             FillRect(custom->nmcd.hdc, &empty, background);
             DeleteObject(background);
+            if(!count)DrawInitialView(custom->nmcd.hdc,empty);
         }
         return CDRF_DODEFAULT;
     }
@@ -2036,6 +2062,13 @@ static BOOL ShouldClearStatusPress(UINT message)
 static LRESULT CALLBACK ListProcedure(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data)
 {
     (void)id;(void)data;
+    if(message==WM_COMMAND&&LOWORD(wp)==IDC_INITIAL_RETRY){PostMessageW(g_window,WM_COMMAND,IDC_REFRESH,0);return 0;}
+    if(message==WM_DRAWITEM&&((DRAWITEMSTRUCT*)lp)->CtlID==IDC_INITIAL_RETRY){DrawOwnerButton((DRAWITEMSTRUCT*)lp);return TRUE;}
+    if(message==WM_TIMER&&wp==9){
+        if(!InitialLoading()||!IsWindowVisible(g_window)||IsIconic(g_window))KillTimer(window,9);
+        else InvalidateRect(window,NULL,FALSE);
+        return 0;
+    }
     if(RowLiftInput(message,lp))return 0;
     if(DueDateListMessage(window,message,lp))return 0;
     if(message==WM_VSCROLL||message==WM_HSCROLL||message==WM_MOUSEWHEEL||message==WM_KEYDOWN||message==WM_CANCELMODE||
@@ -3775,7 +3808,7 @@ static LRESULT TaskPopoverProcedureInner(HWND window,UINT message,WPARAM wp,LPAR
             SetBkMode(draw->hDC,TRANSPARENT);SetTextColor(draw->hDC,AccentColor());HGDIOBJ font=SelectObject(draw->hDC,g_small_font);
             RECT text=draw->rcItem;DrawTextW(draw->hDC,g_popover.key,-1,&text,DT_RIGHT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);
             if(g_hover_button==draw->hwndItem){SIZE size;GetTextExtentPoint32W(draw->hDC,g_popover.key,(int)wcslen(g_popover.key),&size);HPEN pen=CreatePen(PS_SOLID,1,AccentColor());HGDIOBJ previous=SelectObject(draw->hDC,pen);int y=(text.top+text.bottom+size.cy)/2;MoveToEx(draw->hDC,max(text.left,text.right-size.cx),y,NULL);LineTo(draw->hDC,text.right,y);SelectObject(draw->hDC,previous);DeleteObject(pen);}
-            if(draw->itemState&ODS_FOCUS){RECT focus=text;InflateRect(&focus,-D(2),-D(2));DrawFocusRect(draw->hDC,&focus);}SelectObject(draw->hDC,font);return TRUE;
+            if(g_keyboard_button==draw->hwndItem&&(draw->itemState&ODS_FOCUS)){RECT focus=text;InflateRect(&focus,-D(2),-D(2));DrawFocusRect(draw->hDC,&focus);}SelectObject(draw->hDC,font);return TRUE;
         }
         if(((DRAWITEMSTRUCT*)lp)->CtlID==IDC_POPOVER_PIN||((DRAWITEMSTRUCT*)lp)->CtlID==IDC_POPOVER_CLOSE){
             DrawPopoverHeaderButton((const DRAWITEMSTRUCT*)lp);return TRUE;
@@ -3871,7 +3904,7 @@ static void OpenTaskPopover(int task_index,int kind,RECT icon_rect)
             g_popover.body_right-D(112),height-D(36),D(99),D(29),panel,(HMENU)(INT_PTR)IDC_POPOVER_SEND,g_instance,NULL);
         SendMessageW(g_popover.input,EM_SETLIMITTEXT,2047,0);
     }else{
-        g_popover.input=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|ES_MULTILINE|ES_AUTOVSCROLL,
+        g_popover.input=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|ES_MULTILINE|ES_AUTOVSCROLL|ES_WANTRETURN,
             content_left,D(40),content_width,height-D(89),panel,(HMENU)(INT_PTR)IDC_POPOVER_INPUT,g_instance,NULL);
         SendMessageW(g_popover.input,EM_SETLIMITTEXT,0x7ffffffe,0);
         g_popover.updating_note=TRUE;
@@ -4051,9 +4084,10 @@ static BOOL StartJiraJobWithInput(int action,const wchar_t *key,const wchar_t *t
     if(action==2)job->completion_generation=CompletionSubmittingGeneration(key);
     if(job->automatic)InterlockedExchange(&g_auto_load_cancelled,0);
     g_jira_busy=TRUE;EnableWindow(g_refresh,FALSE);UpdateLastUpdated();
+    if(action==0&&!g_updated_time.wYear)SetInitialView(INITIAL_LOADING);
     if(action==3&&key)BeginPendingSwitchFeedback(key);
     g_jira_thread=CreateThread(NULL,0,JiraWorker,job,0,NULL);
-    if(!g_jira_thread){JiraFreeSnapshot(&job->baseline);free(job->status_keys);free(job);g_jira_busy=FALSE;g_jira_stale=TRUE;EndPendingSwitchFeedback();wcscpy_s(g_jira_message,256,L"Could not start background worker.");EnableWindow(g_refresh,TRUE);UpdateLastUpdated();return FALSE;}
+    if(!g_jira_thread){JiraFreeSnapshot(&job->baseline);free(job->status_keys);free(job);g_jira_busy=FALSE;g_jira_stale=TRUE;EndPendingSwitchFeedback();wcscpy_s(g_jira_message,256,L"Could not start background worker.");if(!g_updated_time.wYear)SetInitialView(INITIAL_FAILED);EnableWindow(g_refresh,TRUE);UpdateLastUpdated();return FALSE;}
     return TRUE;
 }
 
@@ -4067,8 +4101,19 @@ static void ResetAutomaticRefresh(BOOL soon)
     if(g_window)SetTimer(g_window,3,5000,NULL);
 }
 static void RefreshWindowsPresence(void);
+static BOOL TryInitialRefresh(void)
+{
+    if(g_initial_view!=INITIAL_WAIT||g_jira_busy||!IsWindowVisible(g_window)||IsIconic(g_window))return FALSE;
+    RefreshWindowsPresence();
+    if(!NativeAutoRefreshAllowed(g_pause_when_locked,&g_refresh_presence))return FALSE;
+    if(!JiraHasAccount()){SetInitialView(INITIAL_SIGNED_OUT);return FALSE;}
+    g_dispatching_auto_refresh=TRUE;BOOL started=StartJiraJob(0,NULL,NULL,(POINT){0});g_dispatching_auto_refresh=FALSE;
+    if(started){g_auto_was_allowed=TRUE;ResetAutomaticRefresh(FALSE);}return started;
+}
 static void AutomaticRefreshTick(void)
 {
+    if(g_initial_view==INITIAL_SIGNED_OUT)return;
+    if(TryInitialRefresh())return;
     RefreshWindowsPresence();
     BOOL allowed=NativeAutoRefreshAllowed(g_pause_when_locked,&g_refresh_presence);
     if(!allowed){g_auto_was_allowed=FALSE;return;}
@@ -4220,6 +4265,7 @@ static void FinishJiraJob(JiraJob *job)
     if(g_jira_thread){CloseHandle(g_jira_thread);g_jira_thread=NULL;}
     g_jira_busy=FALSE;EnableWindow(g_refresh,TRUE);
     if(job->automatic&&job->paused){
+        if(!g_updated_time.wYear)SetInitialView(INITIAL_WAIT);
         JiraFreeSnapshot(&job->snapshot);JiraFreeComments(&job->comments);free(job->status_keys);free(job->status_writes.items);free(job);UpdateLastUpdated();return;
     }
     if(job->action==6){SwitchSyncFinished(job);JiraFreeSnapshot(&job->snapshot);free(job->status_keys);free(job);UpdateLastUpdated();return;}
@@ -4278,6 +4324,8 @@ static void FinishJiraJob(JiraJob *job)
     if(job->action!=1)g_jira_stale=!job->loaded;
     if(job->success&&!g_status_sync_warning)g_jira_message[0]=0;
     else if(!job->success)wcscpy_s(g_jira_message,256,job->error);
+    if(job->action==0&&g_initial_view!=INITIAL_NONE&&g_initial_view!=INITIAL_READY)
+        SetInitialView(job->loaded?INITIAL_READY:INITIAL_FAILED);
     UpdateLastUpdated();
     CompletionJobFinished(job);
     if(!job->success && job->action)ShowJiraJobError(job);
@@ -4538,6 +4586,7 @@ static void CreateControls(void)
     g_tab_current = CreateOwnerButton(g_window, IDC_TAB_CURRENT, L"");
     g_tab_done = CreateOwnerButton(g_window, IDC_TAB_DONE, L"");
     CreateTaskList();
+    g_initial_retry=CreateOwnerButton(g_list,IDC_INITIAL_RETRY,L"");ShowWindow(g_initial_retry,SW_HIDE);
     HWND header=ListView_GetHeader(g_list);
     SetWindowLongPtrW(header,GWL_STYLE,GetWindowLongPtrW(header,GWL_STYLE)|WS_CLIPCHILDREN);
     SetWindowSubclass(header,HeaderFilterProcedure,1,0);
@@ -4667,6 +4716,7 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
     switch (message) {
     case WM_CREATE:
         g_window = window;
+        g_initial_view=JiraHasAccount()?INITIAL_WAIT:INITIAL_SIGNED_OUT;
         g_refresh_presence=(NativeRefreshPresence){TRUE,FALSE};g_presence_next_check=0;
         CreateControls();
         SetTimer(window, 1, 1000, NULL);
@@ -4701,11 +4751,14 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
         return 0;
 
     case WM_SHOWWINDOW:
+        if(w_param){PostMessageW(window,WM_INITIAL_LOAD,0,0);LayoutInitialView();}
         if(!w_param){
+            KillTimer(g_list,9);
             RowLiftClear(FALSE);
             KillTimer(g_list,7);g_comment_attention_visible=g_comment_attention_animating=FALSE;
         }
         break;
+    case WM_INITIAL_LOAD:TryInitialRefresh();LayoutInitialView();return 0;
 
     case WM_MOVE:
         if(g_popover.window)SendMessageW(g_popover.window,WM_CLOSE,0,0);
@@ -4817,9 +4870,7 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
     case WM_NOTIFY: {
         NMHDR *header = (NMHDR *)l_param;
         if(header->hwndFrom==g_tooltips&&header->code==TTN_GETDISPINFOW&&header->idFrom==(UINT_PTR)g_timer){
-            static wchar_t timer_tip[256];
-            swprintf(timer_tip,_countof(timer_tip),g_russian?L"Прошло %ls из 9 часов\nЛКМ — меню таймера\nПКМ — цифры / слова / бар":L"Elapsed %ls of 9 hours\nLeft-click — timer menu\nRight-click — digital / text / bar",g_timer_numbers);
-            ((NMTTDISPINFOW*)l_param)->lpszText=timer_tip;return 0;
+            ((NMTTDISPINFOW*)l_param)->lpszText=(wchar_t*)TimerTooltipText();return 0;
         }
         if(header->hwndFrom==g_tooltips&&header->code==TTN_GETDISPINFOW&&header->idFrom==(UINT_PTR)g_list){
             NMTTDISPINFOW *tip=(NMTTDISPINFOW*)l_param;g_summary_tip[0]=0;POINT cursor;

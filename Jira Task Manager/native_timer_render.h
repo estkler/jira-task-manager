@@ -56,8 +56,9 @@ static BOOL TimerEmojiLoad(void)
 static const wchar_t *TimerHomeCaption(void){return g_russian?L" · Пора домой ":L" · Time to go home ";}
 static int TimerBarWidth(HDC dc)
 {
+    const wchar_t *sample=g_russian?L"0ч 00м 00с":L"0h 00m 00s";
     HGDIOBJ old=SelectObject(dc,g_timer_font);SIZE digits={0};
-    GetTextExtentPoint32W(dc,L"00:00:00",8,&digits);SelectObject(dc,old);
+    GetTextExtentPoint32W(dc,sample,(int)wcslen(sample),&digits);SelectObject(dc,old);
     return digits.cx;
 }
 static int TimerNumberSlotWidthForMode(HDC dc,BOOL text)
@@ -87,11 +88,19 @@ static void DrawTimerCaption(HDC dc,RECT rect,COLORREF ordinary)
     int number_width=TimerNumberSlotWidth(dc);RECT numbers=rect;numbers.right=min(rect.right,rect.left+number_width);
     SetTextColor(dc,g_timer_overrun?(g_dark?RGB(255,111,116):RGB(190,30,40)):ordinary);
     if(g_bar_time){
-        int width=max(0,numbers.right-numbers.left),height=D(6),y=rect.top+(rect.bottom-rect.top-height)/2;
+        int width=max(0,numbers.right-numbers.left),height=D(16),y=rect.top+(rect.bottom-rect.top-height)/2;
         HRGN shape=width?CreateRoundRectRgn(rect.left,y,rect.left+width+1,y+height+1,height,height):NULL;
-        if(shape){HBRUSH track=CreateSolidBrush(g_dark?RGB(66,70,76):RGB(224,229,235));
-            HBRUSH fill=CreateSolidBrush(g_timer_overrun?(g_dark?RGB(255,111,116):RGB(190,30,40)):AccentColor());
+        if(shape){HBRUSH track=CreateSolidBrush(g_dark?RGB(52,58,67):RGB(224,229,235));
+            COLORREF fill_color=g_timer_overrun?(g_dark?RGB(115,63,70):RGB(245,183,188)):(g_dark?RGB(51,92,125):RGB(182,217,245));
+            HBRUSH fill=CreateSolidBrush(fill_color);
             FillRgn(dc,shape,track);int saved=SaveDC(dc);if(saved){IntersectClipRect(dc,rect.left,y,rect.left+MulDiv(width,g_timer_bar_amount,1000),y+height+1);FillRgn(dc,shape,fill);RestoreDC(dc,saved);}
+            wchar_t percent[8];swprintf(percent,_countof(percent),L"%d%%",g_timer_bar_amount/10);
+            RECT label={rect.left,y,rect.left+width,y+height};int label_state=SaveDC(dc);
+            if(label_state){
+                SetBkMode(dc,TRANSPARENT);SetTextColor(dc,TextColor());
+                DrawTextW(dc,percent,-1,&label,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
+                RestoreDC(dc,label_state);
+            }
             DeleteObject(track);DeleteObject(fill);DeleteObject(shape);
         }
     }else DrawTextW(dc,g_timer_numbers,-1,&numbers,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);

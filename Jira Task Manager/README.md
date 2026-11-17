@@ -51,10 +51,18 @@ Programs and Startup shortcuts migrate to Jira Tasklet.lnk while retaining launc
 The installed EXE, internal resource identity and update asset names remain compatible with Jira Task Manager;
 no data or credential migration is needed.
 
-## Current version — 0.9.34
+## Current version — 0.9.38
 
-The workday bar uses the measured width of the ordinary `00:00:00` digits in the
-current timer font. It scales with DPI/density and retains the nine-hour fill cap.
+First visible opening starts the initial Jira read immediately, coalesced with any
+existing worker. Pending/loading, real error+Retry and signed-out states are explicit;
+unknown counts are hidden. The loading indicator stops when hidden or finished.
+Local notes accept plain Enter; mouse task-key links no longer draw a focus rectangle.
+
+The workday bar matches the localized text timer (for example `7ч 22м 21с`)
+and displays a centered percentage in a single readable foreground color over a soft fill. It scales with DPI/density; nine hours means
+100%, and the actual elapsed time continues beyond that threshold.
+The bar tooltip shows only the workday percentage; text/digital tooltips tick
+while open using the existing one-second timer, without Jira requests.
 
 Native updates are available in Settings → About → Update. Discovery checks run
 shortly after startup and once per 24 hours, defer while locked/asleep or busy,

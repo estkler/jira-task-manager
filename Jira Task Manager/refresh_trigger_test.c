@@ -55,8 +55,10 @@ int main(void){
     SendMessageW(settings,WM_COMMAND,215,0);
     assert(!signouts&&s_has_account&&"Failed cache cleanup must be visible and retryable before reporting sign-out");
     wchar_t message[256];GetWindowTextW(s_note,message,256);assert(message[0]);
+    g_initial_view=INITIAL_READY;
     assert(SetFileAttributesW(cache.snapshot_cache_path,FILE_ATTRIBUTE_NORMAL));SendMessageW(settings,WM_COMMAND,215,0);
     assert(signouts==1&&!s_has_account&&GetFileAttributesW(cache.snapshot_cache_path)==INVALID_FILE_ATTRIBUTES);
+    assert(g_initial_view==INITIAL_SIGNED_OUT&&"Signout must replace the initial view with connection guidance");
     SendMessageW(settings,WM_COMMAND,IDCANCEL,0);
     DestroyWindow(g_window);DeleteFileW(g_settings_path);puts("UI-only settings/display cause no Jira reads; filter changes refresh once; manual refresh resets interval");
 }

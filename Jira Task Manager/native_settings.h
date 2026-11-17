@@ -757,6 +757,7 @@ static LRESULT CALLBACK SettingsProcedure(HWND window,UINT message,WPARAM wp,LPA
             FreeTaskItems();g_status_count=0;JiraFreeSnapshot(&g_snapshot);
             for(int i=0;i<3;i++)g_filter_masks[i]=~0ull;
             wcscpy_s(g_jira_message,256,g_russian?L"Вы вышли из Jira. Подключитесь в настройках.":L"Signed out of Jira. Connect in settings.");RefreshTaskList();UpdateLastUpdated();
+            SetInitialView(INITIAL_SIGNED_OUT);
             ApplySignedOutSettingsUi(signed_out_url);return 0;
         }
         if(LOWORD(wp)==234){

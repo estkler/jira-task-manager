@@ -4,6 +4,8 @@
 #include "native_notes.h"
 static int note_save_calls;
 static int note_error_dialogs;
+static int focus_rects;
+static BOOL WINAPI FixtureFocusRect(HDC dc,const RECT *rect){focus_rects++;return DrawFocusRect(dc,rect);}
 static int WINAPI FixtureMessageBox(HWND owner,LPCWSTR text,LPCWSTR caption,UINT type){note_error_dialogs++;return IDOK;}
 static BOOL FixtureNoteSave(const wchar_t *path,const wchar_t *account,const wchar_t *key,const wchar_t *text){
     note_save_calls++;return NativeNoteSave(path,account,key,text);
@@ -34,7 +36,9 @@ static BOOL WINAPI FixtureHide(HWND window,INT show){(void)window;(void)show;ret
 #define EndPaint FixtureEndPaint
 #define SetWindowPos FixtureSetWindowPos
 #define GetCursorPos FixtureCursor
+#define DrawFocusRect FixtureFocusRect
 #include "native.c"
+#undef DrawFocusRect
 #undef ShowWindow
 #undef NativeNoteSave
 #undef MessageBoxW
@@ -226,6 +230,27 @@ static void test_drag_pointer(void){
     g_active_popover=panel;CloseTaskPopover();g_active_popover=&g_attached_popover;
     assert(!IsWindow(popup)&&!FindDetachedPopover(1,L"PDES-6513"));
 }
+static void test_note_enter(void){
+    CloseTaskPopover();OpenTaskPopover(0,2,(RECT){200,30,215,45});HWND edit=g_popover.input;assert(edit);
+    assert(GetWindowLongPtrW(edit,GWL_STYLE)&ES_WANTRETURN);
+    SetWindowPos(g_popover.window,NULL,30000,30000,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+    ShowWindow(g_window,SW_SHOWNOACTIVATE);ShowWindow(g_popover.window,SW_SHOWNOACTIVATE);SetFocus(edit);assert(GetFocus()==edit);
+    SetWindowTextW(edit,L"1.");SendMessageW(edit,EM_SETSEL,2,2);
+    MSG key={.hwnd=edit,.message=WM_KEYDOWN,.wParam=VK_RETURN,.lParam=1};
+    if(!HandleTaskPopoverDialogMessage(&key)){TranslateMessage(&key);DispatchMessageW(&key);}
+    MSG typed;while(PeekMessageW(&typed,edit,WM_CHAR,WM_CHAR,PM_REMOVE))DispatchMessageW(&typed);
+    SendMessageW(edit,WM_CHAR,L'2',1);
+    wchar_t text[64];GetWindowTextW(edit,text,64);assert(!wcscmp(text,L"1.\r\n2"));
+    wchar_t saved[64];assert(NativeNoteLoad(g_settings_path,g_snapshot.account,g_popover.key,saved,64)&&!wcscmp(saved,text));
+    CloseTaskPopover();ShowWindow(g_window,SW_HIDE);OpenTaskPopover(0,1,(RECT){200,30,215,45});assert(!(GetWindowLongPtrW(g_popover.input,GWL_STYLE)&ES_WANTRETURN));
+}
+static void test_link_focus(void){
+    HDC screen=GetDC(g_window),dc=CreateCompatibleDC(screen);HBITMAP bitmap=CreateCompatibleBitmap(screen,D(110),D(28));ReleaseDC(g_window,screen);HGDIOBJ old=SelectObject(dc,bitmap);
+    DRAWITEMSTRUCT draw={.CtlID=IDC_POPOVER_KEY,.hwndItem=g_popover.key_button,.hDC=dc,.rcItem={0,0,D(110),D(28)},.itemState=ODS_FOCUS};
+    focus_rects=0;g_keyboard_button=NULL;SendMessageW(g_popover.window,WM_DRAWITEM,IDC_POPOVER_KEY,(LPARAM)&draw);assert(!focus_rects);
+    g_keyboard_button=g_popover.key_button;SendMessageW(g_popover.window,WM_DRAWITEM,IDC_POPOVER_KEY,(LPARAM)&draw);assert(focus_rects==1);g_keyboard_button=NULL;
+    SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);
+}
 static void test_note_scroll(void){
     CloseTaskPopover();OpenTaskPopover(0,2,(RECT){200,30,215,45});assert(g_popover.input);
     HWND edit=g_popover.input;
@@ -387,6 +412,8 @@ int main(int argc,char **argv){
     TaskItem task={.key=L"PDES-6513",.summary=L"Comment fixture",.status=STATUS_TODO,.assigned_to_me=TRUE};g_tasks=&task;g_task_count=1;g_tab=0;g_jira_busy=TRUE;RefreshTaskList();
     OpenTaskPopover(0,1,(RECT){200,30,215,45});assert(g_popover.window);
     const char *mode=argc>1?argv[1]:"all";
+    if(!strcmp(mode,"link-focus")||!strcmp(mode,"all"))test_link_focus();
+    if(!strcmp(mode,"note-enter")||!strcmp(mode,"all"))test_note_enter();
     if(!strcmp(mode,"link")||!strcmp(mode,"all"))test_link();
     if(!strcmp(mode,"composer")||!strcmp(mode,"all"))test_composer();
     if(!strcmp(mode,"media")||!strcmp(mode,"all"))test_media();
