@@ -5,6 +5,8 @@ No third-party UI or runtime libraries are required.
 
 Version: **0.9.38**.
 
+[История изменений / Changelog](CHANGELOG.md)
+
 Features include task search and sorting, assigned/reported scopes, status filters,
 Jira workflow transitions, encrypted local notes and completion templates, Jira
 comments with unread indicators, detachable panels, a workday timer, tray controls,
