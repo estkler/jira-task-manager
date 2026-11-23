@@ -25,7 +25,7 @@
 #include "native_refresh_interval.h"
 #include "native_auto_refresh.h"
 
-#define APP_VERSION L"0.9.38"
+#define APP_VERSION L"0.9.42"
 #define APP_TITLE TASK_MANAGER_TITLE
 #define WM_TRAYICON (WM_APP + 1)
 
@@ -129,6 +129,10 @@ static int g_completion_active_count;
 static BOOL g_status_sync_warning;
 #define WM_JIRA_RESULT (WM_APP+20)
 #include "native_status_activity.h"
+#include "native_status_marks.h"
+static NativeStatusMarks g_status_marks;
+static HWND g_status_mark_window;
+static NativeStatusMark g_status_mark_shown;
 typedef struct JiraJob {
     int action; /* 0 refresh, 1 transitions, 2 explicit transition, 3 switch, 4 read comments, 5 post comment, 6 targeted status read */
     wchar_t key[80], transition[80], transition_field[80], transition_option[80];
@@ -211,6 +215,7 @@ static HWND g_hover_button;
 static int g_hover_row = -1;
 static BOOL g_hover_status;
 static BOOL g_hover_key;
+static BOOL g_hover_title;
 static BOOL g_hover_note;
 static BOOL g_hover_comment;
 static int g_pressed_indicator_task = -1;
@@ -341,6 +346,7 @@ static int D(int value) {
 }
 static void LayoutControls(int width, int height);
 static void RowLiftClear(BOOL play_wave);
+static void CloseStatusMark(void);
 static void LayoutFooterControls(int width,int height);
 static RECT UpdatedTextRect(RECT rect);
 static void CreateBookmarkControls(void);
@@ -378,6 +384,8 @@ static BOOL SubmitCompletionEditor(TransitionInputDialog *dialog);
 static void CompletionCollectClosed(void);
 static void CompletionRefreshEditors(void);
 static int TaskByKey(const wchar_t *key);
+static BOOL TaskIsAwaitingPause(const TaskItem *task);
+static BOOL g_defer_task_paint;
 static BOOL TaskDimmed(const TaskItem *task);
 static void RefreshTaskList(void);
 static BOOL CommitNoteEdit(BOOL save);
@@ -426,10 +434,20 @@ static BOOL TaskIsPendingSwitch(const TaskItem *task)
 {
     return task&&g_pending_switch_key[0]&&!_wcsicmp(task->key,g_pending_switch_key);
 }
+static BOOL TaskHasActiveAccent(const TaskItem *task)
+{
+    return task&&task->active&&!TaskIsAwaitingPause(task);
+}
 
 static const wchar_t *TaskStatusDisplayText(const TaskItem *task)
 {
     return task?StatusName(task->status):L"";
+}
+static NativeStatusMark *StatusMarkForTask(const TaskItem *task)
+{
+    if(!task||!g_notifications.statuses||!g_status_marks.ready||!NativeStatusSameScope(&g_status_marks.scope,&g_snapshot)||task->status<0||task->status>=g_status_count)return NULL;
+    NativeStatusMark *mark=NativeStatusMarksFind(&g_status_marks,task->key);
+    return mark&&!wcscmp(mark->id,g_status_ids[task->status])?mark:NULL;
 }
 
 static int HourglassFrame(ULONGLONG now,ULONGLONG started)
@@ -710,6 +728,7 @@ static void FreeTaskItems(void)
 
 static void RefreshTaskList(void)
 {
+    CloseStatusMark();
     RowLiftClear(FALSE);
     if((!g_show_all_tab&&g_tab==0)||(!g_show_done_tab&&g_tab==2))g_tab=1;
     BookmarkStopDrag();
@@ -753,8 +772,8 @@ static void RefreshTaskList(void)
     }
 
     SortTaskList();
-    SendMessageW(g_list, WM_SETREDRAW, TRUE, 0);
-    g_hover_row = -1;g_hover_status=g_hover_key=g_hover_note=g_hover_comment=FALSE;
+    if(!g_defer_task_paint)SendMessageW(g_list, WM_SETREDRAW, TRUE, 0);
+    g_hover_row = -1;g_hover_status=g_hover_key=g_hover_title=g_hover_note=g_hover_comment=FALSE;
     g_pressed_indicator_task=-1;g_pressed_indicator_kind=0;
     g_context_task=-1;
     UpdateTabLabels();
@@ -1077,6 +1096,7 @@ static int TaskKeyColumnWidth(HDC dc)
 
 static void LayoutControls(int width, int height)
 {
+    CloseStatusMark();
     RowLiftClear(FALSE);
     if (!g_settings || width <= 0 || height <= 0) return;
     const int margin = D(10), gap = D(5), toolbar = D(28), footer = D(36);
@@ -1137,9 +1157,10 @@ static void LayoutControls(int width, int height)
     int key_width=TaskKeyColumnWidth(dc);
     ListView_SetColumnWidth(g_list, 0, D(28));
     ListView_SetColumnWidth(g_list, 1, key_width);
-    int due_budget=max(0,list_width-D(28)-key_width-D(126)-D(60));
+    int status_width=min(D(144),max(D(126),list_width-D(28)-key_width-D(60)-DueDateMinimumColumnWidth(dc)));
+    int due_budget=max(0,list_width-D(28)-key_width-status_width-D(60));
     int due_width=min(DueDateColumnWidth(dc),due_budget);
-    int fixed=D(28)+key_width+D(126)+due_width,content=max(0,list_width-fixed);
+    int fixed=D(28)+key_width+status_width+due_width,content=max(0,list_width-fixed);
     int comments_width=g_comments_visual_mode?max(D(170),content*45/100)*g_comments_reveal/1000:0;
     RECT outer;GetWindowRect(g_window,&outer);
     int narrow_client=MulDiv(510,(int)g_dpi,96)-((outer.right-outer.left)-width);
@@ -1147,7 +1168,7 @@ static void LayoutControls(int width, int height)
     if(comments_width>content)comments_width=content;
     if(due_width)comments_width=min(comments_width,max(0,content-D(60)));
     ListView_SetColumnWidth(g_list, COMMENTS_COLUMN, comments_width);
-    ListView_SetColumnWidth(g_list, STATUS_COLUMN, D(126));
+    ListView_SetColumnWidth(g_list, STATUS_COLUMN, status_width);
     ListView_SetColumnWidth(g_list,DUE_COLUMN,due_width);
     ListView_SetColumnWidth(g_list, 2, max(0,content-comments_width));
     LayoutStatusFilter();
@@ -1568,6 +1589,17 @@ static void DrawHourglassGlyph(HDC dc,int cx,int cy,int frame,COLORREF color)
     Polygon(dc,grains,3);SelectObject(dc,old_brush);DeleteObject(sand);SelectObject(dc,old_pen);DeleteObject(pen);
 }
 
+static BOOL StatusMarkRectForRow(int row,RECT *rect)
+{
+    int task=TaskIndexAtRow(row);if(task<0||task>=g_task_count||!StatusMarkForTask(&g_tasks[task]))return FALSE;
+    RECT cell;if(!ListView_GetSubItemRect(g_list,row,STATUS_COLUMN,LVIR_BOUNDS,&cell))return FALSE;
+    int center=(cell.top+cell.bottom)/2;*rect=(RECT){cell.left,center-D(12),cell.left+D(14),center+D(12)};return TRUE;
+}
+static int StatusMarkAtPoint(POINT point)
+{
+    LVHITTESTINFO hit={0};hit.pt=point;int row=ListView_SubItemHitTest(g_list,&hit);RECT rect;
+    return row>=0&&StatusMarkRectForRow(row,&rect)&&PtInRect(&rect,point)?TaskIndexAtRow(row):-1;
+}
 static BOOL StatusPillRectForRow(int row,RECT *pill)
 {
     if(!pill||row<0)return FALSE;
@@ -1576,13 +1608,15 @@ static BOOL StatusPillRectForRow(int row,RECT *pill)
     RECT cell;if(!ListView_GetSubItemRect(g_list,row,STATUS_COLUMN,LVIR_BOUNDS,&cell))return FALSE;
     TaskItem *task=&g_tasks[item.lParam];
     HDC dc=GetDC(g_list);if(!dc)return FALSE;
-    HGDIOBJ old_font=SelectObject(dc,task->active?g_bold_font:g_font);
+    BOOL active=TaskHasActiveAccent(task);
+    HGDIOBJ old_font=SelectObject(dc,active?g_bold_font:g_font);
     const wchar_t *label=TaskStatusDisplayText(task);
     SIZE size={0};GetTextExtentPoint32W(dc,label,(int)wcslen(label),&size);
     SelectObject(dc,old_font);ReleaseDC(g_list,dc);
-    int width=min(size.cx+D(task->active?47:35),cell.right-cell.left-D(4));
+    int gutter=D(14),available=cell.right-cell.left-gutter;
+    int width=min(size.cx+D(active?47:35),available-D(4));
     *pill=cell;
-    pill->left=cell.left+(cell.right-cell.left-width)/2;
+    pill->left=cell.left+gutter+(available-width)/2;
     pill->right=pill->left+width;
     pill->top=cell.top+(cell.bottom-cell.top-D(24))/2;
     pill->bottom=pill->top+D(24);
@@ -1874,6 +1908,7 @@ static void DrawCommentIndicator(HDC dc,RECT rect,BOOL hovered,BOOL pressed,BOOL
     if(motion_saved)RestoreDC(dc,motion_saved);
 }
 
+#include "native_status_marks_ui.h"
 static LRESULT DrawListCustom(NMLVCUSTOMDRAW *custom)
 {
     if (custom->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW | CDRF_NOTIFYPOSTPAINT;
@@ -1909,9 +1944,10 @@ static LRESULT DrawListCustom(NMLVCUSTOMDRAW *custom)
     TaskItem *task = &g_tasks[item.lParam];
     CompletionFeedback *completion=CompletionFeedbackFor(task);BOOL completed=completion&&completion->success;
     BOOL switching=TaskIsPendingSwitch(task);
+    BOOL awaiting_pause=TaskIsAwaitingPause(task),active=TaskHasActiveAccent(task);
     BOOL selected = g_list_keyboard_focus && GetFocus()==g_list &&
         (ListView_GetItemState(g_list,row,LVIS_FOCUSED) & LVIS_FOCUSED) != 0;
-    COLORREF row_color = switching ? (g_dark?RGB(35,54,73):RGB(225,240,253)) : task->active ? ActiveColor() : selected ? (g_dark?RGB(42,49,60):RGB(235,241,247))
+    COLORREF row_color = switching ? (g_dark?RGB(35,54,73):RGB(225,240,253)) : active ? ActiveColor() : selected ? (g_dark?RGB(42,49,60):RGB(235,241,247))
         : row==g_hover_row ? (g_dark?RGB(33,37,43):RGB(247,249,251)) : PanelColor();
     ULONGLONG progress_now=GetTickCount64();int progress_role=completed||switching?0:ProgressFeedbackRole(task,progress_now);
     double progress_phase=progress_role?ProgressFeedbackPhase(progress_now):0;
@@ -1947,7 +1983,7 @@ static LRESULT DrawListCustom(NMLVCUSTOMDRAW *custom)
     }
     HBRUSH line=CreateSolidBrush(BorderColor());
     RECT separator={bounds.left,bounds.bottom-1,bounds.right,bounds.bottom}; FillRect(dc,&separator,line); DeleteObject(line);
-    if((task->active||progress_role<0)&&!completed){
+    if((active||progress_role<0)&&!completed){
         line=CreateSolidBrush(progress_role<0?ProgressBlend(row_color,ActiveLineColor(),1-progress_phase):ActiveLineColor());
         RECT marker={bounds.left,bounds.top,bounds.left+D(3),bounds.bottom};FillRect(dc,&marker,line);DeleteObject(line);
     }
@@ -2016,13 +2052,19 @@ static LRESULT DrawListCustom(NMLVCUSTOMDRAW *custom)
         return CDRF_SKIPDEFAULT;
     }
     COLORREF unused,status_foreground;StatusColors(task->status,&unused,&status_foreground);
+    RECT status_mark;if(StatusMarkRectForRow(row,&status_mark)){
+        HBRUSH dot=CreateSolidBrush(AccentColor());HGDIOBJ old_brush=SelectObject(dc,dot),old_pen=SelectObject(dc,GetStockObject(NULL_PEN));
+        int x=(status_mark.left+status_mark.right)/2,y=(status_mark.top+status_mark.bottom)/2,r=max(2,D(3));Ellipse(dc,x-r,y-r,x+r,y+r);
+        SelectObject(dc,old_pen);SelectObject(dc,old_brush);DeleteObject(dot);
+    }
     BOOL status_pressed=item.lParam==g_pressed_status_task||StatusPulseActive((int)item.lParam,GetTickCount64());
     COLORREF status_background=StatusBackground(task->status,row==g_hover_row&&g_hover_status,status_pressed);
     if(switching){status_background=g_dark?RGB(40,105,158):RGB(176,219,255);status_foreground=g_dark?RGB(238,247,255):RGB(13,67,113);}
-    HGDIOBJ old_font=SelectObject(dc,task->active?g_bold_font:g_font);
+    if(awaiting_pause){status_background=g_dark?RGB(43,47,52):RGB(237,240,243);status_foreground=MutedColor();}
+    HGDIOBJ old_font=SelectObject(dc,active?g_bold_font:g_font);
     RECT pill;StatusPillRectForRow(row,&pill);pill=StatusPressedPillRect(pill,status_pressed);
     HBRUSH pill_brush = CreateSolidBrush(status_background);
-    HPEN pill_pen = CreatePen(PS_SOLID, 1, status_pressed?AccentColor():task->active?ActiveLineColor():status_background);
+    HPEN pill_pen = CreatePen(PS_SOLID, 1, status_pressed?AccentColor():active?ActiveLineColor():status_background);
     HGDIOBJ old_brush = SelectObject(dc, pill_brush);
     HGDIOBJ old_pen = SelectObject(dc, pill_pen);
     RoundRect(dc, pill.left, pill.top, pill.right, pill.bottom, D(24), D(24));
@@ -2031,13 +2073,13 @@ static LRESULT DrawListCustom(NMLVCUSTOMDRAW *custom)
     DeleteObject(pill_brush);
     DeleteObject(pill_pen);
     SetTextColor(dc,status_foreground);
-    RECT text_rect=pill;text_rect.left+=D(task->active?26:14);text_rect.right-=D(21);
+    RECT text_rect=pill;text_rect.left+=D(active?26:14);text_rect.right-=D(21);
     DrawTextW(dc,TaskStatusDisplayText(task),-1,&text_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
     HPEN glyph_pen=CreatePen(PS_SOLID,1,status_foreground);old_pen=SelectObject(dc,glyph_pen);
     int cy=(pill.top+pill.bottom)/2,cx=pill.right-D(10);
-    if(switching||completion)DrawHourglassGlyph(dc,cx,cy,HourglassFrame(GetTickCount64(),completion?completion->started:g_pending_switch_started),status_foreground);
+    if(switching||completion||awaiting_pause)DrawHourglassGlyph(dc,cx,cy,HourglassFrame(GetTickCount64(),completion?completion->started:g_pending_switch_started),status_foreground);
     else {POINT chevron[]={{cx-D(3),cy-D(1)},{cx,cy+D(2)},{cx+D(3),cy-D(1)}};Polyline(dc,chevron,3);}
-    if(task->active){
+    if(active){
         int left=pill.left+D(10),grow=progress_role>0?(int)(sin(progress_phase*3.141592653589793)*D(1)+0.5):0;
         POINT play[]={{left-grow,cy-D(3)-grow},{left+D(5)+grow,cy},{left-grow,cy+D(3)+grow},{left-grow,cy-D(3)-grow}};Polyline(dc,play,4);
     }
@@ -2051,7 +2093,7 @@ static LRESULT DrawListCustom(NMLVCUSTOMDRAW *custom)
 
 static BOOL ShouldFlashRowCell(int subitem,BOOL over_status_pill)
 {
-    return !over_status_pill&&subitem!=DUE_COLUMN&&!(subitem==COMMENTS_COLUMN&&g_comments_mode==2);
+    return !over_status_pill&&!(subitem==COMMENTS_COLUMN&&g_comments_mode==2);
 }
 
 static BOOL ShouldClearStatusPress(UINT message)
@@ -2097,7 +2139,9 @@ static LRESULT CALLBACK ListProcedure(HWND window, UINT message, WPARAM wp, LPAR
             goto mouse_press_done;
         }
         int status_task=StatusTaskAtPoint(hit.pt),note_task=NoteIndicatorTaskAtPoint(hit.pt),comment_task=CommentIndicatorTaskAtPoint(hit.pt);
-        if(status_task>=0){
+        if(StatusMarkAtPoint(hit.pt)>=0){
+            /* Dot opens information only; never press a transition or flash the row. */
+        } else if(status_task>=0){
             g_pressed_status_task=g_status_pulse_task=status_task;g_status_pulse_started=GetTickCount64();
             SetTimer(window,4,16,NULL);InvalidateRect(window,NULL,FALSE);UpdateWindow(window);
         } else if(note_task>=0||comment_task>=0){
@@ -2182,11 +2226,11 @@ mouse_press_done:;
             row=ListView_SubItemHitTest(window,&row_hit);hit.iSubItem=-1;
         }
         if(row>=0){RECT row_bounds;if(!ListView_GetItemRect(window,row,&row_bounds,LVIR_BOUNDS)||hit.pt.y<row_bounds.top||hit.pt.y>=row_bounds.bottom)row=-1;}
-        BOOL status=inside&&StatusTaskAtPoint(hit.pt)>=0,key=row>=0&&hit.iSubItem==1,note=inside&&NoteIndicatorTaskAtPoint(hit.pt)>=0,comment=inside&&CommentIndicatorTaskAtPoint(hit.pt)>=0;
-        if(row!=g_hover_row||status!=g_hover_status||key!=g_hover_key||note!=g_hover_note||comment!=g_hover_comment){g_hover_row=row;g_hover_status=status;g_hover_key=key;g_hover_note=note;g_hover_comment=comment;InvalidateRect(window,NULL,FALSE);}
+        BOOL status=inside&&(StatusTaskAtPoint(hit.pt)>=0||StatusMarkAtPoint(hit.pt)>=0),key=row>=0&&hit.iSubItem==1,title=row>=0&&hit.iSubItem==2,note=inside&&NoteIndicatorTaskAtPoint(hit.pt)>=0,comment=inside&&CommentIndicatorTaskAtPoint(hit.pt)>=0;
+        if(row!=g_hover_row||status!=g_hover_status||key!=g_hover_key||title!=g_hover_title||note!=g_hover_note||comment!=g_hover_comment){g_hover_row=row;g_hover_status=status;g_hover_key=key;g_hover_title=title;g_hover_note=note;g_hover_comment=comment;InvalidateRect(window,NULL,FALSE);}
         TRACKMOUSEEVENT track={sizeof(track),TME_LEAVE,window,0};TrackMouseEvent(&track);
-    } else if(message==WM_MOUSELEAVE){g_hover_row=-1;g_hover_status=g_hover_key=g_hover_note=g_hover_comment=FALSE;InvalidateRect(window,NULL,FALSE);}
-    else if(message==WM_SETCURSOR && (g_hover_status||g_hover_key||g_hover_note||g_hover_comment)){SetCursor(LoadCursorW(NULL,IDC_HAND));return TRUE;}
+    } else if(message==WM_MOUSELEAVE){g_hover_row=-1;g_hover_status=g_hover_key=g_hover_title=g_hover_note=g_hover_comment=FALSE;InvalidateRect(window,NULL,FALSE);}
+    else if(message==WM_SETCURSOR && (g_hover_status||g_hover_key||g_hover_title||g_hover_note||g_hover_comment)){SetCursor(LoadCursorW(NULL,IDC_HAND));return TRUE;}
     return DefSubclassProc(window,message,wp,lp);
 }
 
@@ -4221,13 +4265,14 @@ static BOOL InstallSnapshot(JiraSnapshot *snapshot)
     for(int i=1;i<snapshot->count;i++)if(items[i].active){
         TaskItem value=items[i];int j=i;while(j>0&&!items[j-1].active){items[j]=items[j-1];j--;}items[j]=value;
     }
+    NativeStatusMarksObserve(&g_status_marks,g_settings_path,&g_snapshot,snapshot,&g_status_writes,g_notifications.statuses,TRUE);
     FreeTaskItems();JiraFreeSnapshot(&g_snapshot);
     g_snapshot=*snapshot;memset(snapshot,0,sizeof(*snapshot));g_tasks=items;g_task_count=g_snapshot.count;
     free(g_status_writes.items);g_status_writes=(NativeStatusWrites){0};
     g_flash_task=-1;KillTimer(g_list,2);g_status_pulse_task=-1;KillTimer(g_list,4);KillTimer(g_list,7);
     g_comment_attention_animating=FALSE;
     g_pressed_indicator_task=-1;g_pressed_indicator_kind=0;g_context_task=-1;
-    g_hover_row=-1;g_hover_status=g_hover_key=g_hover_note=g_hover_comment=FALSE;
+    g_hover_row=-1;g_hover_status=g_hover_key=g_hover_title=g_hover_note=g_hover_comment=FALSE;
     GetLocalTime(&g_updated_time);RefreshTaskList();UpdateTooltips();
     for(TaskPopover *popover=g_detached_popovers;popover;popover=popover->next){
         if(popover->kind!=1)continue;
@@ -4314,6 +4359,7 @@ static void FinishJiraJob(JiraJob *job)
         free(g_status_writes.items);g_status_writes=job->status_writes;job->status_writes=(NativeStatusWrites){0};
     }
     CompletionFeedbackPrepare(job);
+    g_defer_task_paint=progress_feedback.key[0]!=0;
     if(job->loaded&&!(job->status_only?InstallIssueStatuses(&job->snapshot,job->key):InstallSnapshot(&job->snapshot))){
         job->success=FALSE;wcscpy_s(job->error,256,L"Cannot display Jira list: memory or status limit exceeded.");job->loaded=FALSE;
     }
@@ -4321,6 +4367,7 @@ static void FinishJiraJob(JiraJob *job)
     ProgressFeedbackCommit(&progress_feedback,job->success&&job->loaded);
     if(job->status_only){SwitchSyncArm(job);SwitchSyncResolve();}
     else if(job->loaded){g_status_sync_warning=FALSE;SwitchSyncResolve();}
+    if(g_defer_task_paint){g_defer_task_paint=FALSE;SendMessageW(g_list,WM_SETREDRAW,TRUE,0);}
     if(job->action!=1)g_jira_stale=!job->loaded;
     if(job->success&&!g_status_sync_warning)g_jira_message[0]=0;
     else if(!job->success)wcscpy_s(g_jira_message,256,job->error);
@@ -4761,6 +4808,7 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
     case WM_INITIAL_LOAD:TryInitialRefresh();LayoutInitialView();return 0;
 
     case WM_MOVE:
+        CloseStatusMark();
         if(g_popover.window)SendMessageW(g_popover.window,WM_CLOSE,0,0);
         RepositionAnchoredTaskPopovers();
         return 0;
@@ -4877,7 +4925,10 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
             if(GetCursorPos(&cursor)){
                 ScreenToClient(g_list,&cursor);LVHITTESTINFO hit={0};hit.pt=cursor;
                 int row=ListView_SubItemHitTest(g_list,&hit);
-                if(row>=0&&CommentIndicatorTaskAtPoint(cursor)>=0)
+                int mark_task=row>=0?StatusMarkAtPoint(cursor):-1;
+                NativeStatusMark *mark=mark_task>=0?StatusMarkForTask(&g_tasks[mark_task]):NULL;
+                if(mark)_snwprintf_s(g_summary_tip,_countof(g_summary_tip),_TRUNCATE,L"%ls → %ls",mark->previous,mark->current);
+                else if(row>=0&&CommentIndicatorTaskAtPoint(cursor)>=0)
                     wcscpy_s(g_summary_tip,_countof(g_summary_tip),g_russian?L"Открыть комментарии Jira":L"Open Jira comments");
                 else if(row>=0&&NoteIndicatorTaskAtPoint(cursor)>=0)TaskNoteInfoTip(row,g_summary_tip,_countof(g_summary_tip));
                 else if(row>=0&&hit.iSubItem==DUE_COLUMN)TaskDueDateInfoTip(row,g_summary_tip,_countof(g_summary_tip));
@@ -4895,13 +4946,15 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
             NMITEMACTIVATE *activate = (NMITEMACTIVATE *)l_param;
             BOOL status_pill=StatusTaskAtPoint(activate->ptAction)>=0,note_indicator=NoteIndicatorTaskAtPoint(activate->ptAction)>=0,
                 comment_indicator=CommentIndicatorTaskAtPoint(activate->ptAction)>=0;
-            if(activate->iSubItem!=1&&!status_pill&&!note_indicator&&!comment_indicator&&activate->iSubItem!=COMMENTS_COLUMN&&activate->iSubItem!=DUE_COLUMN)
+            /* The status gutter stays read-only after opening removes its dot. */
+            if(activate->iSubItem!=1&&activate->iSubItem!=STATUS_COLUMN&&!status_pill&&!note_indicator&&!comment_indicator&&StatusMarkAtPoint(activate->ptAction)<0&&activate->iSubItem!=COMMENTS_COLUMN)
                 ActivateTask(TaskIndexAtRow(activate->iItem));
             return 0;
         }
         if (header->idFrom == IDC_TASKS && header->code == NM_CLICK) {
             if(g_bookmarks.editing)return 0;
             NMITEMACTIVATE *activate = (NMITEMACTIVATE *)l_param;
+            if(StatusMarkAtPoint(activate->ptAction)>=0){OpenStatusMark(activate->iItem);return 0;}
             int note_task=NoteIndicatorTaskAtPoint(activate->ptAction);
             int comment_task=CommentIndicatorTaskAtPoint(activate->ptAction);
             /* Hit-test before marking the row seen: removing NEW can move its icons. */
@@ -5007,6 +5060,9 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
         break;
 
     case WM_DESTROY:
+        CloseStatusMark();
+        if(g_status_marks.ready&&g_status_marks.dirty)StatusMarksSave(&g_status_marks,g_settings_path);
+        NativeStatusMarksFree(&g_status_marks);
         WTSUnRegisterSessionNotification(window);
         CompletionCloseEditors();
         RowLiftClear(FALSE);ProgressFeedbackClear();
@@ -5126,6 +5182,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, 
     MSG message;
     while (GetMessageW(&message, NULL, 0, 0) > 0) {
         if(HandleCompletionDialogMessage(&message))continue;
+        if(u_details&&(message.hwnd==u_details||IsChild(u_details,message.hwnd))&&IsDialogMessageW(u_details,&message))continue;
         if(s_advanced_window&&(message.hwnd==s_advanced_window||IsChild(s_advanced_window,message.hwnd))&&IsDialogMessageW(s_advanced_window,&message))continue;
         if(s_window&&(message.hwnd==s_window||IsChild(s_window,message.hwnd))&&IsDialogMessageW(s_window,&message))continue;
         if(HandleTaskPopoverDialogMessage(&message))continue;

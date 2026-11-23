@@ -73,6 +73,19 @@ UpdateStatus UpdateParseRelease(const char *json,size_t length,UpdateVersion cur
     *out=r;status=UpdateCompareVersion(r.version,current)>0?UPDATE_OK:UPDATE_NONE;
 done:nj_free(&d);return status;
 }
+void UpdateParseNotes(const char *json,size_t length,wchar_t *out,size_t capacity){
+    if(!out||!capacity)return;out[0]=0;if(!json||!length||length>UPDATE_JSON_LIMIT)return;
+    NJDoc d={0};if(!nj_parse(&d,json,length))return;
+    int body=unique(&d,0,"body");size_t units=0;
+    if(body>=0&&d.tokens[body].kind==NJ_STRING&&nj__string_units(&d,&d.tokens[body],&units)&&units<=UPDATE_JSON_LIMIT){
+        wchar_t *text=calloc(units+1,sizeof(*text));
+        if(text&&string(&d,body,text,units+1)){
+            BOOL valid=TRUE;for(size_t i=0;i<units;i++)if(text[i]<32&&text[i]!=L'\n'&&text[i]!=L'\r'&&text[i]!=L'\t'){valid=FALSE;break;}
+            if(valid){size_t take=units<capacity-1?units:capacity-1;if(take<units&&take){take--;if(take&&text[take-1]>=0xd800&&text[take-1]<=0xdbff)take--;}
+                memcpy(out,text,take*sizeof(*out));if(take<units&&capacity>1)out[take++]=L'…';out[take]=0;}
+        }free(text);
+    }nj_free(&d);
+}
 BOOL UpdateUrlAllowed(const wchar_t *url){
     if(!url||wcslen(url)>8192)return FALSE;
     for(const wchar_t *p=url;*p;p++)if(*p<=32||*p==L'\\'||*p==L'#'||*p==127)return FALSE;

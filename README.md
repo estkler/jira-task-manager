@@ -3,7 +3,20 @@
 A native Windows desktop client for personal Jira tasks, built with the Win32 API.
 No third-party UI or runtime libraries are required.
 
-Version: **0.9.38**.
+Version: **0.9.42**.
+
+Application updates show release notes before downloading, byte-based progress and a separate verification phase. Downloads can be cancelled; installation remains a user action.
+
+External status changes retain an unobtrusive local dot until the detail card is opened.
+Confirmed local status changes, including Done, clear the old dot automatically.
+Marks survive restarts, are account/server scoped, and require no additional Jira reads.
+
+Due cells, including empty ones, support the ordinary task-row interaction;
+task titles show a hand cursor. Right-click date/bar switching is preserved.
+
+In Progress switching now combines the row lift and amber fill into one continuous
+reaction. Previous active rows show pending Jira synchronization without a second
+yellow active highlight; their actual status still comes from Jira.
 
 [История изменений / Changelog](CHANGELOG.md)
 

@@ -19,7 +19,10 @@ static void statuses(const wchar_t *first_id,const wchar_t *first_name,const wch
     if(status_new_task){JiraItem *three=&next.items[2];wcscpy_s(three->key,80,L"PDES-9999");wcscpy_s(three->summary,1024,L"New task");wcscpy_s(three->status_id,80,L"todo");wcscpy_s(three->status_name,128,L"To Do");wcscpy_s(three->category,32,L"new");three->assigned_to_me=TRUE;}
     assert(InstallSnapshot(&next));
 }
-int main(void)
+#ifndef STATUS_ALERT_ENTRY
+#define STATUS_ALERT_ENTRY main
+#endif
+int STATUS_ALERT_ENTRY(void)
 {
     g_instance=GetModuleHandleW(NULL);g_dpi=96;g_russian=TRUE;g_tab=1;
     INITCOMMONCONTROLSEX common={sizeof(common),ICC_LISTVIEW_CLASSES|ICC_STANDARD_CLASSES};assert(InitCommonControlsEx(&common));

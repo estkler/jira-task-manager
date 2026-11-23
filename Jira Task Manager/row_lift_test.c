@@ -31,6 +31,12 @@ static BOOL WINAPI LiftFixtureDeleteDC(HDC dc)
 static void LiftTick(UINT elapsed){fixture_now+=elapsed;WindowProcedure(g_window,WM_TIMER,946,0);}
 static void FlushFixturePainting(void)
 {RedrawWindow(g_window,NULL,NULL,RDW_INVALIDATE|RDW_FRAME|RDW_ALLCHILDREN|RDW_UPDATENOW);GdiFlush();}
+static COLORREF LiftTargetPixel(int fraction)
+{
+    RowLiftTile *tile=&g_row_lift.tiles[g_row_lift.target];HDC dc=CreateCompatibleDC(NULL);
+    HGDIOBJ old=SelectObject(dc,tile->bitmap);COLORREF color=GetPixel(dc,g_row_lift.width*fraction/100,2);
+    SelectObject(dc,old);DeleteDC(dc);return color;
+}
 int main(void)
 {
     g_instance=GetModuleHandleW(NULL);g_dpi=96;g_notifications.tasks=g_notifications.comments=g_notifications.statuses=FALSE;
@@ -45,12 +51,16 @@ int main(void)
     RECT initial,middle;GetWindowRect(actor,&initial);MapWindowPoints(NULL,g_list,(POINT*)&initial,2);
     assert(initial.top==original.top&&initial.bottom==original.bottom);
     assert(g_tasks[TaskByKey(L"B-2")].active&&RowForKey(L"B-2")==0);
-    assert(!progress_timer&&"The amber wave must wait for the moving row to arrive");
+    assert(!progress_timer); /* The lift timer also advances the same color effect. */
     LiftTick(175);GetWindowRect(actor,&middle);MapWindowPoints(NULL,g_list,(POINT*)&middle,2);
     RECT destination;ListView_GetItemRect(g_list,0,&destination,LVIR_BOUNDS);
     assert(middle.top<original.top&&middle.top>destination.top);
+    FlushFixturePainting();
+    assert(LiftTargetPixel(10)!=PanelColor()&&"The moving row must fill during the lift, not restart on arrival");
     LiftTick(175);assert(!GetDlgItem(g_list,3050)&&progress_timer);
-    Advance(225);assert(RowPixel(L"B-2",25)!=PanelColor()&&RowPixel(L"B-2",25)!=ActiveColor());Advance(225);
+    assert(g_progress_feedback.started==fixture_now-350&&"Arrival must preserve the original color animation clock");
+    assert(RowPixel(L"B-2",50)!=PanelColor());
+    Advance(100);assert(!progress_timer&&RowPixel(L"B-2",25)==ActiveColor());
     Seed();StartAndFinish(3);layer=GetDlgItem(g_list,3050);assert(layer);int menus=lift_popup_calls;
     SendMessageW(layer,WM_RBUTTONDOWN,MK_RBUTTON,MAKELPARAM(100,20));
     SendMessageW(g_list,WM_RBUTTONUP,0,MAKELPARAM(100,original.top+2));
@@ -103,5 +113,5 @@ int main(void)
     WindowProcedure(g_window,WM_DESTROY,0,0);DestroyWindow(g_window);assert(DeleteFileW(g_settings_path));
     assert(!g_row_lift.tiles&&!g_row_lift.wave.previous&&!g_row_lift.buffer&&!g_row_lift.canvas);
     assert(!lift_bitmap_count&&!lift_dc_count);
-    puts("Row lift: confirmed result, intermediate positions, deferred wave, cancellation/input/geometry, reduced motion, scope/failure guards, GDI fallback and repeated DPI/theme cleanup passed");return 0;
+    puts("Row lift: confirmed result, intermediate positions, continuous color clock, cancellation/input/geometry, reduced motion, scope/failure guards, GDI fallback and repeated DPI/theme cleanup passed");return 0;
 }

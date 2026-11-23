@@ -7,6 +7,7 @@ typedef struct UpdateWork {
     BOOL background;
     UpdateUiState previous_state;
     UpdateStatus status;UpdateVersion current;UpdateRelease release;UpdateStage stage;
+    wchar_t notes[UPDATE_NOTES_CAP];volatile LONG received,verifying;
     HWND owner;HANDLE thread,ready,helper;
 } UpdateWork;
 static UpdateUiState u_state;
@@ -14,6 +15,12 @@ static UINT u_generation;
 static UpdateWork *u_work;
 static HWND u_settings;
 static UpdateRelease u_release;
+static wchar_t u_notes[UPDATE_NOTES_CAP];
+static HWND u_details;
+static int u_failed_action;
+static void UpdateDetailsClose(void);
+static void UpdateDetailsOpen(HWND settings);
+static void UpdateDetailsRender(void);
 static UpdateStage u_stage;
 static UpdateStatus u_error;
 static BOOL u_no_release,u_lock_initialized;
@@ -51,6 +58,7 @@ static void UpdateWorkRelease(UpdateWork *work){
 }
 static void UpdateFreeze(BOOL freeze){
     EnableWindow(g_window,!freeze);if(u_settings&&IsWindow(u_settings))EnableWindow(u_settings,!freeze);
+    if(u_details)EnableWindow(u_details,!freeze);
     if(g_attached_popover.window)EnableWindow(g_attached_popover.window,!freeze);
     for(TaskPopover *p=g_detached_popovers;p;p=p->next)if(p->window)EnableWindow(p->window,!freeze);
 }
@@ -60,6 +68,7 @@ static void UpdateStopHelper(HANDLE helper){
     if(helper&&WaitForSingleObject(helper,0)==WAIT_TIMEOUT&&TerminateProcess(helper,UPDATE_CANCELLED))WaitForSingleObject(helper,200);
 }
 static void UpdateUiCancel(void){
+    UpdateDetailsClose();
     if(!u_shutdown&&!u_handoff&&u_work&&u_work->background){u_settings=NULL;return;}
     if(!u_shutdown&&!u_handoff&&!u_work){
         ++u_generation; /* Detach invalidates queued manual results, not cached discovery. */
@@ -79,15 +88,16 @@ static void UpdateUiAbortHandoff(void){
     if(g_lifecycle.started&&g_lifecycle.update_path[0])DeleteFileW(g_lifecycle.update_path);
     UpdateStageCleanup(&u_stage);u_state=UPDATE_UI_ERROR;u_error=UPDATE_BUSY;UpdateUiRender(u_settings);
 }
+static void UpdateUiProgress(DWORD received,DWORD total,void *context){(void)total;UpdateWork *work=context;InterlockedExchange(&work->received,(LONG)received);}
 static DWORD WINAPI UpdateUiWorker(void *arg){
     UpdateWork *work=arg;
-    if(work->action==0)work->status=UpdateCheck(work->current,&work->cancel,&work->release);
+    if(work->action==0)work->status=UpdateCheckWithNotes(work->current,&work->cancel,&work->release,work->notes,UPDATE_NOTES_CAP);
     else if(work->action==1){
         work->status=UpdateStageCreate(&work->stage);
         if(work->status==UPDATE_OK){
             HANDLE file=CreateFileW(work->stage.executable,GENERIC_READ|GENERIC_WRITE,FILE_SHARE_READ,NULL,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,NULL);
             if(file==INVALID_HANDLE_VALUE)work->status=UPDATE_IO;
-            else{work->status=UpdateDownload(&work->release,file,&work->cancel);if(work->status==UPDATE_OK)work->status=UpdateVerifyFile(file,&work->release);CloseHandle(file);}
+            else{work->status=UpdateDownloadWithProgress(&work->release,file,&work->cancel,UpdateUiProgress,work);if(work->status==UPDATE_OK){InterlockedExchange(&work->verifying,1);work->status=UpdateVerifyFile(file,&work->release);}CloseHandle(file);}
         }
     }else{
         HANDLE handles[]={work->ready,work->helper};DWORD wait=WaitForMultipleObjects(2,handles,FALSE,5000);
@@ -139,7 +149,7 @@ static void UpdateUiBeginInstall(HWND settings){
     if(u_state!=UPDATE_UI_READY||u_work||u_handoff)return;
     if(!UpdateInstallAllowed(u_reason,_countof(u_reason))){UpdateUiRender(settings);return;}
     wchar_t text[256];swprintf(text,_countof(text),g_russian?L"Обновить " APP_TITLE L" %ls до %lu.%lu.%lu и перезапустить?":L"Update " APP_TITLE L" %ls to %lu.%lu.%lu and restart?",APP_VERSION,u_release.version.major,u_release.version.minor,u_release.version.patch);
-    if(MessageBoxW(settings,text,APP_TITLE,MB_YESNO|MB_ICONQUESTION)!=IDYES)return;
+    if(MessageBoxW(u_details?u_details:settings,text,APP_TITLE,MB_YESNO|MB_ICONQUESTION)!=IDYES)return;
     if(!UpdateInstallAllowed(u_reason,_countof(u_reason))){UpdateUiRender(settings);return;}
     UpdateApplyRequest request={0};request.parent_pid=GetCurrentProcessId();request.release=u_release;FILETIME c,e,k,t;
     if(!GetProcessTimes(GetCurrentProcess(),&c,&e,&k,&t)){u_state=UPDATE_UI_ERROR;u_error=UPDATE_IO;UpdateUiRender(settings);return;}
@@ -162,9 +172,10 @@ static BOOL UpdateUiHandleMessage(UINT message,WPARAM wp,LPARAM lp){
     if(current){
         u_error=work->status;u_reason[0]=0;
         if(work->status!=UPDATE_OK&&work->status!=UPDATE_NONE){
+            u_failed_action=work->action;
             u_auto_due=GetTickCount64()+3600000ULL;u_state=work->background?work->previous_state:UPDATE_UI_ERROR;UpdateStopHelper(work->helper);
         }
-        else if(work->action==0){u_release=work->release;u_no_release=work->status==UPDATE_NONE&&!work->release.asset_id;
+        else if(work->action==0){u_release=work->release;wcscpy_s(u_notes,UPDATE_NOTES_CAP,work->notes);u_no_release=work->status==UPDATE_NONE&&!work->release.asset_id;
             u_local_newer=work->status==UPDATE_NONE&&work->release.asset_id&&UpdateCompareVersion(work->current,work->release.version)>0;
             u_auto_due=GetTickCount64()+24ULL*60*60*1000;u_state=work->status==UPDATE_OK?UPDATE_UI_AVAILABLE:UPDATE_UI_CURRENT;
             if(work->background&&u_state==UPDATE_UI_AVAILABLE)UpdateUiNotifyAvailable();
@@ -189,6 +200,7 @@ static void UpdateUiShutdown(void){
     UpdateUiCancel();MSG msg;while(PeekMessageW(&msg,g_window,WM_UPDATE_RESULT,WM_UPDATE_READY,PM_REMOVE))UpdateWorkRelease((UpdateWork*)msg.lParam);
     if(u_helper){CloseHandle(u_helper);u_helper=NULL;} /* committed child waits for normal process exit */
 }
+#include "native_update_details.h"
 static void UpdateUiRender(HWND settings){
     if(!settings||!IsWindow(settings))return;wchar_t status[256],button[128];const wchar_t *label=g_russian?L"Обновить":L"Update";
     switch(u_state){
@@ -203,4 +215,5 @@ static void UpdateUiRender(HWND settings){
     }
     wcscpy_s(button,128,label);SetWindowTextW(GetDlgItem(settings,235),status);SetWindowTextW(GetDlgItem(settings,242),button);EnableWindow(GetDlgItem(settings,242),!u_work&&!UpdateUiBusy()&&!UpdateSettingsAccountBusy());
     LayoutSettings();
+    UpdateDetailsRender();
 }

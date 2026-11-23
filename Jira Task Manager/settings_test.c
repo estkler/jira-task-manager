@@ -41,18 +41,18 @@ static UpdateStatus FixtureLaunchHelper(const UpdateStage *stage,const UpdateApp
     if(status==UPDATE_OK&&update_confirm_install){DWORD wait=WaitForSingleObject(*ready,5000);if(wait!=WAIT_OBJECT_0){TerminateProcess(*process,UPDATE_CANCELLED);WaitForSingleObject(*process,2000);}assert(wait==WAIT_OBJECT_0);assert(DuplicateHandle(GetCurrentProcess(),*process,GetCurrentProcess(),&update_launched_child,0,FALSE,DUPLICATE_SAME_ACCESS));}
     return status;
 }
-static UpdateStatus FixtureUpdateCheck(UpdateVersion current,UpdateCancel *cancel,UpdateRelease *out){
-    (void)current;WaitForSingleObject(update_fixture_gate,2000);if(cancel->cancelled)return UPDATE_CANCELLED;*out=update_fixture_release;return update_fixture_check;
+static UpdateStatus FixtureUpdateCheck(UpdateVersion current,UpdateCancel *cancel,UpdateRelease *out,wchar_t *notes,size_t capacity){
+    if(notes&&capacity)notes[0]=0;(void)current;WaitForSingleObject(update_fixture_gate,2000);if(cancel->cancelled)return UPDATE_CANCELLED;*out=update_fixture_release;return update_fixture_check;
 }
-static UpdateStatus FixtureUpdateDownload(const UpdateRelease *release,HANDLE destination,UpdateCancel *cancel){
+static UpdateStatus FixtureUpdateDownload(const UpdateRelease *release,HANDLE destination,UpdateCancel *cancel,UpdateProgress progress,void *context){
     (void)release;WaitForSingleObject(update_fixture_gate,2000);if(cancel->cancelled)return UPDATE_CANCELLED;if(update_fixture_download!=UPDATE_OK)return update_fixture_download;
     wchar_t fixture[MAX_PATH];GetModuleFileNameW(NULL,fixture,MAX_PATH);*wcsrchr(fixture,L'\\')=0;wcscat_s(fixture,MAX_PATH,L"\\update_test_fixture.exe");
     HANDLE source=CreateFileW(fixture,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);if(source==INVALID_HANDLE_VALUE)return UPDATE_IO;
     BYTE bytes[16384];DWORD got,written;UpdateStatus status=UPDATE_OK;for(;;){if(!ReadFile(source,bytes,sizeof(bytes),&got,NULL)){status=UPDATE_IO;break;}if(!got)break;if(!WriteFile(destination,bytes,got,&written,NULL)||written!=got){status=UPDATE_IO;break;}}
     CloseHandle(source);return status;
 }
-#define UpdateCheck FixtureUpdateCheck
-#define UpdateDownload FixtureUpdateDownload
+#define UpdateCheckWithNotes FixtureUpdateCheck
+#define UpdateDownloadWithProgress FixtureUpdateDownload
 #define CreateThread FixtureCreateThread
 #define MessageBoxW FixtureMessageBox
 #define UpdateLaunchHelperTracked FixtureLaunchHelper

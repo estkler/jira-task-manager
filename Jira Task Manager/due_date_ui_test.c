@@ -67,7 +67,7 @@ int main(int argc,char **argv)
         RECT due,status,row;assert(ListView_GetSubItemRect(g_list,0,DUE_COLUMN,LVIR_BOUNDS,&due));
         assert(ListView_GetSubItemRect(g_list,0,STATUS_COLUMN,LVIR_BOUNDS,&status)&&due.right<=status.left);
         assert(ListView_GetItemRect(g_list,0,&row,LVIR_BOUNDS)&&row.bottom-row.top==baseline.bottom-baseline.top);
-        POINT point={(due.left+due.right)/2,(due.top+due.bottom)/2};assert(StatusTaskAtPoint(point)<0&&!ShouldFlashRowCell(DUE_COLUMN,FALSE));
+        POINT point={(due.left+due.right)/2,(due.top+due.bottom)/2};assert(StatusTaskAtPoint(point)<0&&ShouldFlashRowCell(DUE_COLUMN,FALSE));
         NativeDueText text;assert(TaskDueDescribe(&tasks[0],&text)&&text.kind==NATIVE_DUE_TODAY);
         assert(TaskDueDescribe(&tasks[1],&text)&&text.kind==NATIVE_DUE_OVERDUE);
         assert(TaskDueDescribe(&tasks[4],&text)&&text.kind==NATIVE_DUE_NORMAL);

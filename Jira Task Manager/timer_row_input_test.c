@@ -159,6 +159,13 @@ static void row_input(void){
             assert(GetPixel(dc,client.right-1,y)==(dark?RGB(33,37,43):RGB(247,249,251))&&"Hover background must actually reach the right edge");
             SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);
             RECT pill;assert(StatusPillRectForRow(row,&pill));move_at((pill.left+pill.right)/2,y);assert(g_hover_row==row&&g_hover_status);
+            RECT title;assert(ListView_GetSubItemRect(g_list,row,2,LVIR_BOUNDS,&title));
+            move_at(title.left+D(15),y);SetCursor(LoadCursorW(NULL,IDC_ARROW));
+            SendMessageW(g_list,WM_SETCURSOR,(WPARAM)g_list,MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
+            assert(GetCursor()==LoadCursorW(NULL,IDC_HAND)&&"Task title must advertise its click action with a hand cursor");
+            SendMessageW(g_list,WM_MOUSELEAVE,0,0);SetCursor(LoadCursorW(NULL,IDC_ARROW));
+            SendMessageW(g_list,WM_SETCURSOR,(WPARAM)g_list,MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
+            assert(GetCursor()!=LoadCursorW(NULL,IDC_HAND)&&"Leaving the title must clear the link cursor");
             move_at(client.right-1,y);assert(g_hover_row==row&&!g_hover_status);
             move_at(client.right,y);assert(g_hover_row==-1);move_at(-1,y);assert(g_hover_row==-1);last=bounds;
         }

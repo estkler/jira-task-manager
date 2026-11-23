@@ -6,7 +6,7 @@ typedef struct RowLiftPending {
     RowLiftPosition *rows;int count,total,top;RECT body;wchar_t key[80];
     UINT dpi;BOOL dark;int density;
 } RowLiftPending;
-typedef struct RowLiftTile {HBITMAP bitmap;int from,to,height;BOOL target;} RowLiftTile;
+typedef struct RowLiftTile {HBITMAP bitmap;int from,to,height,row;BOOL target;} RowLiftTile;
 static struct {
     HWND canvas,actor;HBITMAP buffer;RowLiftTile *tiles;int count,target,width,height;
     RECT body;UINT dpi;BOOL dark;int density;ULONGLONG started;ProgressFeedback wave;
@@ -43,6 +43,26 @@ static BOOL RowLiftBody(RECT *body)
     RECT header;if(!g_list||!GetClientRect(g_list,body)||!GetWindowRect(ListView_GetHeader(g_list),&header))return FALSE;
     MapWindowPoints(NULL,g_list,(POINT*)&header,2);body->top=max(0,header.bottom);
     return body->right>0&&body->bottom>body->top;
+}
+static void RowLiftRefreshTiles(void)
+{
+    /* Render both motion and color from the original confirmed-start clock.
+       The retained wave owns its keys while the normal list is covered. */
+    ProgressFeedback saved=g_progress_feedback;g_progress_feedback=g_row_lift.wave;
+    HDC dc=CreateCompatibleDC(NULL);
+    if(dc){
+        for(int i=0;i<g_row_lift.count;i++){
+            RowLiftTile *tile=&g_row_lift.tiles[i];RECT bounds;
+            int task=TaskIndexAtRow(tile->row);
+            if(task<0||(!ProgressFeedbackRole(&g_tasks[task],GetTickCount64())&&!TaskIsAwaitingPause(&g_tasks[task])))continue;
+            if(!ListView_GetItemRect(g_list,tile->row,&bounds,LVIR_BOUNDS))continue;
+            HGDIOBJ old=SelectObject(dc,tile->bitmap);SetViewportOrgEx(dc,0,-bounds.top,NULL);
+            NMLVCUSTOMDRAW draw={0};draw.nmcd.hdc=dc;draw.nmcd.dwDrawStage=CDDS_ITEMPREPAINT;draw.nmcd.dwItemSpec=tile->row;DrawListCustom(&draw);
+            SelectObject(dc,old);
+        }
+        DeleteDC(dc);
+    }
+    g_progress_feedback=saved;
 }
 static LRESULT CALLBACK RowLiftProcedure(HWND window,UINT message,WPARAM wp,LPARAM lp)
 {
@@ -84,7 +104,7 @@ static void RowLiftClear(BOOL play_wave)
     free(g_row_lift.tiles);if(g_row_lift.buffer)DeleteObject(g_row_lift.buffer);
     ProgressFeedback wave=g_row_lift.wave;memset(&g_row_lift,0,sizeof(g_row_lift));
     if(play_wave&&wave.key[0]&&CommentAnimationEnabled()){
-        ProgressFeedbackClear();g_progress_feedback=wave;g_progress_feedback.started=GetTickCount64();
+        ProgressFeedbackClear();g_progress_feedback=wave;
         if(ProgressFeedbackValid())SetTimer(g_window,945,16,NULL);else ProgressFeedbackClear();
     }else free(wave.previous);
     if(g_list)InvalidateRect(g_list,NULL,FALSE);
@@ -130,7 +150,7 @@ static void RowLiftBegin(RowLiftPending *pending)
         const wchar_t *key=g_tasks[item.lParam].key;int old=-1;
         for(int i=0;i<pending->count;i++)if(!wcscmp(key,pending->rows[i].key)){old=i;break;}
         if(old<0){valid=FALSE;break;}
-        RowLiftTile *tile=&g_row_lift.tiles[n];tile->height=bounds.bottom-bounds.top;tile->from=pending->rows[old].bounds.top-body.top;tile->to=bounds.top-body.top;
+        RowLiftTile *tile=&g_row_lift.tiles[n];tile->row=row;tile->height=bounds.bottom-bounds.top;tile->from=pending->rows[old].bounds.top-body.top;tile->to=bounds.top-body.top;
         if(tile->height<=0||tile->height!=pending->rows[old].bounds.bottom-pending->rows[old].bounds.top){valid=FALSE;break;}
         tile_pixels+=(ULONGLONG)g_row_lift.width*tile->height;if(tile_pixels+pixels>6ULL*1024*1024){valid=FALSE;break;}
         tile->target=!wcscmp(key,pending->key);
@@ -164,7 +184,8 @@ static void RowLiftTick(ULONGLONG now)
         g_row_lift.dpi==g_dpi&&g_row_lift.dark==g_dark&&g_row_lift.density==g_density;
     if(!valid||!CommentAnimationEnabled()){RowLiftClear(FALSE);return;}
     if(now-g_row_lift.started>=350){RowLiftClear(TRUE);return;}
+    RowLiftRefreshTiles();
     RowLiftTile *tile=&g_row_lift.tiles[g_row_lift.target];
     SetWindowPos(g_row_lift.actor,NULL,0,RowLiftY(tile,RowLiftPhase(now)),0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
-    InvalidateRect(g_row_lift.canvas,NULL,FALSE);UpdateWindow(g_row_lift.canvas);UpdateWindow(g_row_lift.actor);
+    InvalidateRect(g_row_lift.canvas,NULL,FALSE);InvalidateRect(g_row_lift.actor,NULL,FALSE);UpdateWindow(g_row_lift.canvas);UpdateWindow(g_row_lift.actor);
 }

@@ -11,8 +11,8 @@ static HWND s_window,s_url,s_token,s_interval,s_note;
 static BOOL s_replacing_token;
 static void UpdateSettingsConnectionCaption(void);
 static const wchar_t *SettingsRefreshGuidance(void){return g_russian?
-    L"Рекомендуем 30 минут. Более частое обновление увеличивает нагрузку на сервер Jira. Уменьшайте интервал только при необходимости.":
-    L"30 minutes is recommended. More frequent updates increase the load on the Jira server. Shorten the interval only when necessary.";}
+    L"По умолчанию — 30 минут. Чем меньше интервал, тем чаще приложение проверяет изменения в Jira.":
+    L"The default is 30 minutes. A shorter interval checks Jira for changes more often.";}
 static int SettingsTrayCount(void){return (int)SendMessageW(GetDlgItem(s_window,213),TBM_GETPOS,0,0);}
 static void UpdateSettingsTrayReadout(void)
 {
@@ -717,7 +717,7 @@ static LRESULT CALLBACK SettingsProcedure(HWND window,UINT message,WPARAM wp,LPA
         if(LOWORD(wp)==252&&(HIWORD(wp)==EN_CHANGE||HIWORD(wp)==EN_UPDATE)){UpdateExclusionScrollBar();return 0;}
         if((LOWORD(wp)==224||LOWORD(wp)==225||LOWORD(wp)==246||LOWORD(wp)==250||LOWORD(wp)==251||LOWORD(wp)==261)&&HIWORD(wp)==BN_CLICKED&&!s_initializing&&!s_busy){ApplySettingsCheckboxPreview();return 0;}
         if(LOWORD(wp)==257&&!s_busy){OpenAdvancedSettingsWindow();return 0;}
-        if(LOWORD(wp)==242){if(u_state==UPDATE_UI_AVAILABLE)UpdateUiBeginDownload(window);else if(u_state==UPDATE_UI_READY)UpdateUiBeginInstall(window);else UpdateUiBeginCheck(window);return 0;}
+        if(LOWORD(wp)==242){if(u_state==UPDATE_UI_AVAILABLE||u_state==UPDATE_UI_READY)UpdateDetailsOpen(window);else UpdateUiBeginCheck(window);return 0;}
         if(LOWORD(wp)==210&&HIWORD(wp)==EN_CHANGE&&!s_initializing&&!s_busy){
             wchar_t entered[768];GetWindowTextW(s_url,entered,768);BOOL connected=s_has_account&&!wcscmp(entered,s_original_url);
             if(connected&&GetWindowTextLengthW(s_token))s_replacing_token=TRUE;

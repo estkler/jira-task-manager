@@ -13,12 +13,12 @@ static BOOL WINAPI AutoForeground(HWND window){return TRUE;}
 static HANDLE WINAPI AutoThread(LPSECURITY_ATTRIBUTES a,SIZE_T b,LPTHREAD_START_ROUTINE c,LPVOID value,DWORD d,LPDWORD e)
 {assert(!auto_job);auto_job=value;auto_workers++;return CreateEventW(NULL,TRUE,FALSE,NULL);}
 static BOOL WINAPI AutoNotice(DWORD message,PNOTIFYICONDATAW notice);
-static UpdateStatus AutoCheck(UpdateVersion current,UpdateCancel *cancel,UpdateRelease *out)
-{auto_checks++;*out=(UpdateRelease){.version={current.major,current.minor,current.patch+(DWORD)auto_patch},.asset_id=42,.size=100};return auto_status;}
+static UpdateStatus AutoCheck(UpdateVersion current,UpdateCancel *cancel,UpdateRelease *out,wchar_t *notes,size_t capacity)
+{if(notes&&capacity)notes[0]=0;auto_checks++;*out=(UpdateRelease){.version={current.major,current.minor,current.patch+(DWORD)auto_patch},.asset_id=42,.size=100};return auto_status;}
 #define GetTickCount64 AutoClock
 #define CreateThread AutoThread
 #define Shell_NotifyIconW AutoNotice
-#define UpdateCheck AutoCheck
+#define UpdateCheckWithNotes AutoCheck
 #define JiraHasAccount AutoAccount
 #define JiraGetUrl AutoUrl
 #define ShowWindow AutoShow

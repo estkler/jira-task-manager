@@ -66,6 +66,16 @@ static BOOL TaskDueDisplayForWidth(HDC dc,const TaskItem *task,int width,NativeD
     if(size.cx+D(14)>width){SYSTEMTIME today;GetLocalTime(&today);NativeDueCompactLabel(task->due_date,&today,text);}
     return TRUE;
 }
+static int DueDateMinimumColumnWidth(HDC dc)
+{
+    SYSTEMTIME today;GetLocalTime(&today);HGDIOBJ previous=SelectObject(dc,g_small_font);int width=0;
+    for(int i=0;i<g_task_count;i++){
+        NativeDueText text;if(!TaskDueDescribe(&g_tasks[i],&text))continue;
+        NativeDueCompactLabel(g_tasks[i].due_date,&today,&text);SIZE size;
+        GetTextExtentPoint32W(dc,text.label,(int)wcslen(text.label),&size);width=max(width,size.cx+D(14));
+    }
+    SelectObject(dc,previous);return width;
+}
 static BOOL TaskDueBarAmount(const TaskItem *task,int *amount)
 {
     return g_due_bar_mode&&NativeDueProgress(task->created_utc,task->due_date,CurrentFileTime(),amount);

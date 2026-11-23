@@ -15,6 +15,9 @@ int main(void)
     Seed();delay_old_pause=TRUE;StartAndFinish(3);
     assert(fixture_searches==0&&fixture_posts==1&&fixture_status_reads==3&&g_switch_sync.count==1);
     assert(!wcscmp(g_switch_sync.keys[0],L"A-1"));
+    assert(TaskIsAwaitingPause(&g_tasks[TaskByKey(L"A-1")])&&!TaskHasActiveAccent(&g_tasks[TaskByKey(L"A-1")]));
+    assert(!TaskIsAwaitingPause(&g_tasks[TaskByKey(L"B-2")])&&TaskHasActiveAccent(&g_tasks[TaskByKey(L"B-2")]));
+    assert(TaskTitleFont(&g_tasks[TaskByKey(L"A-1")])==g_font);
     int index=TaskByKey(L"C-3");TaskItem unchanged=g_tasks[index];JiraItem source_unchanged={0};
     for(int i=0;i<g_snapshot.count;i++)if(!wcscmp(g_snapshot.items[i].key,L"C-3"))source_unchanged=g_snapshot.items[i];
     PollStatuses();assert(g_switch_sync.count==1&&g_tasks[TaskByKey(L"A-1")].active);
@@ -42,6 +45,8 @@ int main(void)
     for(int attempt=0;attempt<4;attempt++)PollStatuses();
     assert(!g_switch_sync.count&&g_status_sync_warning&&fixture_posts==1&&fixture_searches==0&&fixture_status_reads==7);
     assert(g_tasks[TaskByKey(L"A-1")].active&&g_tasks[TaskByKey(L"B-2")].active); /* Timeout must not invent Hold. */
+    assert(!TaskIsAwaitingPause(&g_tasks[TaskByKey(L"A-1")])&&TaskHasActiveAccent(&g_tasks[TaskByKey(L"A-1")]));
+    assert(RowPixel(L"A-1",50)==ActiveColor()); /* A failed server rule must not leave a permanently muted active row. */
     WindowProcedure(g_window,WM_TIMER,947,0);assert(!fixture_job);
 
     Seed();delay_old_pause=TRUE;StartAndFinish(3);fail_reload=TRUE;

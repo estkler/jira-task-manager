@@ -5,6 +5,16 @@ typedef struct SwitchSync {
     UINT generation;ULONGLONG due,expires;
 } SwitchSync;
 static SwitchSync g_switch_sync;
+/* Presentation only: retain the server status until automation confirms it. */
+static BOOL TaskIsAwaitingPause(const TaskItem *task)
+{
+    if(!task||!task->active||!g_switch_sync.count||!NativeStatusSameScope(&g_switch_sync.scope,&g_snapshot)||
+        !wcscmp(task->key,g_switch_sync.target))return FALSE;
+    int target=TaskByKey(g_switch_sync.target);
+    if(target<0||!g_tasks[target].active)return FALSE;
+    for(int i=0;i<g_switch_sync.count;i++)if(!wcscmp(task->key,g_switch_sync.keys[i]))return TRUE;
+    return FALSE;
+}
 static void SwitchSyncClear(void)
 {
     UINT generation=g_switch_sync.generation+1;
@@ -33,6 +43,7 @@ static BOOL SwitchSyncCapture(JiraJob *job)
 static BOOL InstallIssueStatuses(const JiraSnapshot *patch,const wchar_t *preferred)
 {
     if(!NativeStatusSameScope(&g_snapshot,patch))return FALSE;
+    NativeStatusMarksObserve(&g_status_marks,g_settings_path,&g_snapshot,patch,&g_status_writes,g_notifications.statuses,FALSE);
     int *mapped=calloc((size_t)(patch->count+1),sizeof(*mapped));if(!mapped)return FALSE;
     int count=g_status_count;wchar_t ids[64][80],names[64][128];int categories[64];
     memcpy(ids,g_status_ids,sizeof(ids));memcpy(names,g_status_names,sizeof(names));memcpy(categories,g_status_categories,sizeof(categories));
@@ -105,6 +116,7 @@ static void SwitchSyncWarn(void)
 static void SwitchSyncTick(ULONGLONG now)
 {
     SwitchSyncResolve();if(!g_switch_sync.count)return;
+    if(g_list)InvalidateRect(g_list,NULL,FALSE);
     if(now>=g_switch_sync.expires||g_switch_sync.attempt>=4){if(!g_jira_busy)SwitchSyncWarn();return;}
     if(g_jira_busy||g_update_handoff||now<g_switch_sync.due)return;
     if(StartJiraJob(6,NULL,NULL,(POINT){0}))g_switch_sync.attempt++;

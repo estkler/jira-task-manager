@@ -51,7 +51,22 @@ Programs and Startup shortcuts migrate to Jira Tasklet.lnk while retaining launc
 The installed EXE, internal resource identity and update asset names remain compatible with Jira Task Manager;
 no data or credential migration is needed.
 
-## Current version — 0.9.38
+## Current version — 0.9.41
+
+Unseen external status changes have a small persistent dot. Click it to see the
+previous and current statuses, then acknowledge with Got it. A confirmed local
+transition, including Done, clears the old mark automatically; failed writes do not.
+Marks use encrypted local storage isolated by Jira server/account and add no requests.
+The refresh guidance states the 30-minute default without unmeasured load claims.
+
+Due cells retain row click feedback and double-click activation, including cells
+without a deadline. Right-clicking a date still toggles its bar display.
+Task titles show a hand cursor, matching the task-key affordance.
+
+Confirmed In Progress switches animate row movement and amber fill together,
+without restarting the fill on arrival. While Jira automation pauses a previous
+active issue, it keeps its last confirmed status with a neutral hourglass treatment.
+Only involved issue keys are reread; the app never pauses the previous issue itself.
 
 First visible opening starts the initial Jira read immediately, coalesced with any
 existing worker. Pending/loading, real error+Retry and signed-out states are explicit;

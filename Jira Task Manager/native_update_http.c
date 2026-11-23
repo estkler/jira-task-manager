@@ -115,20 +115,26 @@ UpdateStatus UpdateHttpGetUsing(const wchar_t *url,const wchar_t *accept,DWORD l
 UpdateStatus UpdateHttpGet(const wchar_t *url,const wchar_t *accept,DWORD limit,UpdateCancel *cancel,UpdateHttpSink sink,void *context,DWORD *http_status){return UpdateHttpGetUsing(url,accept,limit,cancel,sink,context,http_status,&windows_transport,NULL);}
 typedef struct JsonBuffer {char *data;DWORD length;} JsonBuffer;
 static BOOL json_sink(const BYTE *bytes,DWORD length,void *context){JsonBuffer *b=context;if(length>UPDATE_JSON_LIMIT-b->length)return FALSE;memcpy(b->data+b->length,bytes,length);b->length+=length;return TRUE;}
-UpdateStatus UpdateCheckUsing(UpdateVersion current,UpdateCancel *cancel,UpdateRelease *out,const UpdateTransport *transport,void *context){
+UpdateStatus UpdateCheckWithNotesUsing(UpdateVersion current,UpdateCancel *cancel,UpdateRelease *out,wchar_t *notes,size_t capacity,const UpdateTransport *transport,void *context){
+    if(notes&&capacity)notes[0]=0;
     if(!out)return UPDATE_INVALID;memset(out,0,sizeof(*out));JsonBuffer b={malloc(UPDATE_JSON_LIMIT+1),0};if(!b.data)return UPDATE_IO;DWORD code;
     UpdateStatus result=UpdateHttpGetUsing(L"https://api.github.com/repos/estkler/jira-task-manager/releases/latest",L"application/json",UPDATE_JSON_LIMIT,cancel,json_sink,&b,&code,transport,context);
-    if(result==UPDATE_OK){if(code==404)result=UPDATE_NONE;else if(code!=200)result=UPDATE_NETWORK;else result=UpdateParseRelease(b.data,b.length,current,out);}free(b.data);return result;
+    if(result==UPDATE_OK){if(code==404)result=UPDATE_NONE;else if(code!=200)result=UPDATE_NETWORK;else {result=UpdateParseRelease(b.data,b.length,current,out);if((result==UPDATE_OK||result==UPDATE_NONE)&&out->asset_id)UpdateParseNotes(b.data,b.length,notes,capacity);}}free(b.data);return result;
 }
+UpdateStatus UpdateCheckUsing(UpdateVersion current,UpdateCancel *cancel,UpdateRelease *out,const UpdateTransport *transport,void *context){return UpdateCheckWithNotesUsing(current,cancel,out,NULL,0,transport,context);}
 UpdateStatus UpdateCheck(UpdateVersion current,UpdateCancel *cancel,UpdateRelease *out){return UpdateCheckUsing(current,cancel,out,&windows_transport,NULL);}
-typedef struct FileSink {HANDLE file;DWORD length;} FileSink;
-static BOOL file_sink(const BYTE *bytes,DWORD length,void *context){FileSink *f=context;DWORD written;BOOL ok=WriteFile(f->file,bytes,length,&written,NULL)&&written==length;if(ok)f->length+=length;return ok;}
-UpdateStatus UpdateDownloadUsing(const UpdateRelease *release,HANDLE destination,UpdateCancel *cancel,const UpdateTransport *transport,void *context){
+UpdateStatus UpdateCheckWithNotes(UpdateVersion current,UpdateCancel *cancel,UpdateRelease *out,wchar_t *notes,size_t capacity){return UpdateCheckWithNotesUsing(current,cancel,out,notes,capacity,&windows_transport,NULL);}
+typedef struct FileSink {HANDLE file;DWORD length,total;UpdateProgress progress;void *progress_context;} FileSink;
+static BOOL file_sink(const BYTE *bytes,DWORD length,void *context){FileSink *f=context;DWORD written;BOOL ok=WriteFile(f->file,bytes,length,&written,NULL)&&written==length;if(ok){f->length+=length;if(f->progress)f->progress(f->length,f->total,f->progress_context);}return ok;}
+UpdateStatus UpdateDownloadWithProgressUsing(const UpdateRelease *release,HANDLE destination,UpdateCancel *cancel,UpdateProgress progress,void *progress_context,const UpdateTransport *transport,void *context){
     if(!release||!release->asset_id||!release->size||release->size>UPDATE_EXE_LIMIT||destination==INVALID_HANDLE_VALUE)return UPDATE_INVALID;
     LARGE_INTEGER zero={0};if(!SetFilePointerEx(destination,zero,NULL,FILE_BEGIN)||!SetEndOfFile(destination))return UPDATE_IO;
-    wchar_t url[256];swprintf(url,_countof(url),L"https://api.github.com/repos/estkler/jira-task-manager/releases/assets/%llu",release->asset_id);DWORD code;FileSink f={destination,0};
+    wchar_t url[256];swprintf(url,_countof(url),L"https://api.github.com/repos/estkler/jira-task-manager/releases/assets/%llu",release->asset_id);DWORD code;FileSink f={.file=destination,.total=release->size,.progress=progress,.progress_context=progress_context};
+    if(progress)progress(0,release->size,progress_context);
     UpdateStatus result=UpdateHttpGetUsing(url,L"application/octet-stream",release->size,cancel,file_sink,&f,&code,transport,context);
     if(result==UPDATE_OK)result=code!=200?UPDATE_NETWORK:f.length!=release->size?UPDATE_INVALID:FlushFileBuffers(destination)?UPDATE_OK:UPDATE_IO;
     return result;
 }
+UpdateStatus UpdateDownloadUsing(const UpdateRelease *release,HANDLE destination,UpdateCancel *cancel,const UpdateTransport *transport,void *context){return UpdateDownloadWithProgressUsing(release,destination,cancel,NULL,NULL,transport,context);}
 UpdateStatus UpdateDownload(const UpdateRelease *release,HANDLE destination,UpdateCancel *cancel){return UpdateDownloadUsing(release,destination,cancel,&windows_transport,NULL);}
+UpdateStatus UpdateDownloadWithProgress(const UpdateRelease *release,HANDLE destination,UpdateCancel *cancel,UpdateProgress progress,void *context){return UpdateDownloadWithProgressUsing(release,destination,cancel,progress,context,&windows_transport,NULL);}

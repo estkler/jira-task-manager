@@ -58,7 +58,7 @@ static int ProgressFeedbackRole(const TaskItem *task,ULONGLONG now)
 {
     if(!ProgressFeedbackValid()||!CommentAnimationEnabled()||now-g_progress_feedback.started>=450)return 0;
     if(!wcscmp(task->key,g_progress_feedback.key))return 1;
-    if(!task->active)for(int i=0;i<g_progress_feedback.previous_count;i++)
+    if(!task->active||TaskIsAwaitingPause(task))for(int i=0;i<g_progress_feedback.previous_count;i++)
         if(!wcscmp(task->key,g_progress_feedback.previous[i]))return -1;
     return 0;
 }

@@ -4,7 +4,7 @@ static wchar_t g_dimmed_server[800],g_dimmed_account[256];
 static BOOL g_dimmed_ready;
 static ULONGLONG g_dimmed_generation;
 static BOOL TaskDimmed(const TaskItem *task){return g_dimmed_ready&&!task->active&&NativeBookmarksContains(&g_dimmed,task->key);}
-static HFONT TaskTitleFont(const TaskItem *task){return task->active?g_bold_font:TaskDimmed(task)&&g_italic_font?g_italic_font:g_font;}
+static HFONT TaskTitleFont(const TaskItem *task){return TaskHasActiveAccent(task)?g_bold_font:TaskDimmed(task)&&g_italic_font?g_italic_font:g_font;}
 static void TaskDimmingSyncIdentity(void){
     const wchar_t *account=g_snapshot.identity.account_id[0]?g_snapshot.identity.account_id:g_snapshot.identity.key[0]?g_snapshot.identity.key:g_snapshot.identity.name;
     const wchar_t *server=account[0]?g_snapshot.server:L"";
@@ -34,7 +34,7 @@ static void TaskDimmingToggle(const wchar_t *key){
         MessageBoxW(g_window,g_russian?L"Не удалось сохранить вид задачи. Проверьте доступ к папке данных.":L"Could not save the task appearance. Check access to the data folder.",APP_TITLE,MB_OK|MB_ICONWARNING);return;
     }
     RowLiftClear(FALSE);SortTaskList();
-    g_hover_row=-1;g_hover_status=g_hover_key=g_hover_note=g_hover_comment=FALSE;
+    g_hover_row=-1;g_hover_status=g_hover_key=g_hover_title=g_hover_note=g_hover_comment=FALSE;
     g_pressed_indicator_task=-1;g_pressed_indicator_kind=0;
     RepositionTaskPopover();InvalidateRect(g_list,NULL,FALSE);
 }

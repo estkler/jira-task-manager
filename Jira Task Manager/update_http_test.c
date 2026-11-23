@@ -92,4 +92,24 @@ static void test_pending_phase_lifetime(void){
     }
     assert(GetProcessHandleCount(GetCurrentProcess(),&handles_after)&&handles_before==handles_after);
 }
-int main(void){test_check_no_release();test_transport_policy();test_cancel();test_download_size();test_opening_deadline_and_cancel();test_pending_phase_lifetime();puts("update_http_test: PASS");return 0;}
+static void test_notes_same_response(void){
+    const char *json="{\"tag_name\":\"v0.9.99\",\"draft\":false,\"prerelease\":false,\"body\":\"## Changes\\n- Native UI \\u2192 faster\",\"assets\":[{\"name\":\"Jira.Task.Manager.exe\",\"id\":42,\"size\":100,\"digest\":\"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}]}";
+    Fixture f={.status=200,.body=json};UpdateRelease r;UpdateCancel c={0};wchar_t notes[128];
+    assert(UpdateCheckWithNotesUsing((UpdateVersion){0,9,38},&c,&r,notes,128,&transport,&f)==UPDATE_OK);
+    assert(f.calls==1&&!wcscmp(notes,L"## Changes\n- Native UI → faster")&&r.version.patch==99);
+    f.status=500;assert(UpdateCheckWithNotesUsing((UpdateVersion){0},&c,&r,notes,128,&transport,&f)==UPDATE_NETWORK&&!notes[0]);
+    UpdateParseNotes("{\"body\":null}",13,notes,128);assert(!notes[0]);
+    const char *bad="{\"body\":\"x\\u0000y\"}";UpdateParseNotes(bad,strlen(bad),notes,128);assert(!notes[0]);
+    const char *longer="{\"body\":\"1234567890\"}";UpdateParseNotes(longer,strlen(longer),notes,8);assert(wcslen(notes)==7&&notes[6]==L'…');
+}
+typedef struct ProgressFixture{DWORD last,total;int calls;UpdateCancel *cancel;} ProgressFixture;
+static void capture_progress(DWORD received,DWORD total,void *context){ProgressFixture *f=context;assert(received>=f->last&&received<=total);f->last=received;f->total=total;f->calls++;if(f->cancel&&received)f->cancel->cancelled=1;}
+static void test_byte_progress(void){
+    wchar_t temp[MAX_PATH],path[MAX_PATH];GetTempPathW(MAX_PATH,temp);GetTempFileNameW(temp,L"prg",0,path);
+    HANDLE file=CreateFileW(path,GENERIC_READ|GENERIC_WRITE,0,NULL,CREATE_ALWAYS,FILE_FLAG_DELETE_ON_CLOSE,NULL);assert(file!=INVALID_HANDLE_VALUE);
+    char *body=malloc(40001);memset(body,'a',40000);body[40000]=0;Fixture f={.status=200,.body=body};UpdateCancel c={0};UpdateRelease r={.asset_id=4294967296ull,.size=40000};ProgressFixture p={0};
+    assert(UpdateDownloadWithProgressUsing(&r,file,&c,capture_progress,&p,&transport,&f)==UPDATE_OK);assert(p.last==40000&&p.total==40000&&p.calls>=4);
+    p=(ProgressFixture){.cancel=&c};assert(UpdateDownloadWithProgressUsing(&r,file,&c,capture_progress,&p,&transport,&f)==UPDATE_CANCELLED);assert(p.last>0&&p.last<40000);
+    free(body);CloseHandle(file);
+}
+int main(void){test_notes_same_response();test_byte_progress();test_check_no_release();test_transport_policy();test_cancel();test_download_size();test_opening_deadline_and_cancel();test_pending_phase_lifetime();puts("update_http_test: PASS");return 0;}

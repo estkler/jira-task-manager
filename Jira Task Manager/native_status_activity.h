@@ -37,6 +37,12 @@ static BOOL NativeStatusSameScope(const JiraSnapshot *one,const JiraSnapshot *tw
 }
 static int NativeStatusKeyOrder(const void *one,const void *two)
 {return wcscmp((*(const JiraItem *const *)one)->key,(*(const JiraItem *const *)two)->key);}
+static BOOL NativeStatusIsOwnWrite(const NativeStatusWrites *writes,const JiraSnapshot *scope,const JiraItem *item)
+{
+    if(writes&&NativeStatusSameScope(&writes->scope,scope))for(int i=0;i<writes->count;i++)
+        if(writes->items[i].status_id[0]&&!wcscmp(writes->items[i].key,item->key)&&!wcscmp(writes->items[i].status_id,item->status_id))return TRUE;
+    return FALSE;
+}
 static BOOL NativeStatusCollect(const JiraSnapshot *before,const JiraSnapshot *after,const NativeStatusWrites *writes,NativeStatusActivity *activity)
 {
     *activity=(NativeStatusActivity){.first=-1};
@@ -48,12 +54,7 @@ static BOOL NativeStatusCollect(const JiraSnapshot *before,const JiraSnapshot *a
         const JiraItem *item=&after->items[i];
         const JiraItem **found=bsearch(&item,ordered,(size_t)before->count,sizeof(*ordered),NativeStatusKeyOrder);
         if(!found||!(*found)->status_id[0]||!item->status_id[0]||!wcscmp((*found)->status_id,item->status_id))continue;
-        BOOL own=FALSE;
-        if(writes&&NativeStatusSameScope(&writes->scope,after))for(int j=0;j<writes->count;j++){
-            const NativeStatusWrite *write=&writes->items[j];
-            if(write->status_id[0]&&!wcscmp(write->key,item->key)&&!wcscmp(write->status_id,item->status_id)){own=TRUE;break;}
-        }
-        if(own)continue;
+        if(NativeStatusIsOwnWrite(writes,after,item))continue;
         if(activity->first<0){activity->first=i;wcscpy_s(activity->previous,128,(*found)->status_name);}
         activity->count++;
     }

@@ -11,4 +11,6 @@ typedef struct UpdateTransport {
 UpdateStatus UpdateHttpGetUsing(const wchar_t *url,const wchar_t *accept,DWORD limit,UpdateCancel *cancel,UpdateHttpSink sink,void *context,DWORD *http_status,const UpdateTransport *transport,void *transport_context);
 UpdateStatus UpdateCheckUsing(UpdateVersion current,UpdateCancel *cancel,UpdateRelease *out,const UpdateTransport *transport,void *context);
 UpdateStatus UpdateDownloadUsing(const UpdateRelease *release,HANDLE destination,UpdateCancel *cancel,const UpdateTransport *transport,void *context);
+UpdateStatus UpdateCheckWithNotesUsing(UpdateVersion current,UpdateCancel *cancel,UpdateRelease *out,wchar_t *notes,size_t capacity,const UpdateTransport *transport,void *context);
+UpdateStatus UpdateDownloadWithProgressUsing(const UpdateRelease *release,HANDLE destination,UpdateCancel *cancel,UpdateProgress progress,void *progress_context,const UpdateTransport *transport,void *context);
 #endif

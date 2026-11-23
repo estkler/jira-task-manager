@@ -164,7 +164,9 @@ int main(void)
     Seed();delay_old_pause=TRUE;StartAndFinish(3);
     assert(fixture_posts==1&&g_tasks[TaskByKey(L"B-2")].active&&g_tasks[TaskByKey(L"A-1")].active);
     assert(fixture_searches==0&&fixture_status_reads==3); /* Selected preflight + selected/old readback only. */
-    Advance(450);assert(RowPixel(L"A-1",50)==ActiveColor()); /* Never invent a Hold while server automation is pending. */
+    Advance(450);
+    assert(g_tasks[TaskByKey(L"A-1")].active&&!wcscmp(TaskStatusDisplayText(&g_tasks[TaskByKey(L"A-1")]),L"In Progress"));
+    assert(RowPixel(L"A-1",50)==PanelColor()&&"Pending old issue must stop looking like a second running task without inventing Hold");
     old_status="On Hold"; /* Server rule finishes later; automatic targeted read must discover it. */
     fixture_now+=1000;WindowProcedure(g_window,WM_TIMER,947,0);
     assert(fixture_job&&"Pending Jira automation must schedule a targeted read, without manual Refresh");CompleteWorker();
@@ -192,6 +194,17 @@ int main(void)
         warm=RowPixel(L"B-2",25);assert(warm!=ActiveColor()&&GetRValue(warm)>=GetGValue(warm)&&GetGValue(warm)>GetBValue(warm));
         assert(RowPixel(L"C-3",50)==PanelColor());Advance(225);
         assert(!progress_timer&&RowPixel(L"B-2",25)==ActiveColor()&&RowPixel(L"A-1",50)==PanelColor());
+    }
+    /* Due cells, including empty ones, retain the ordinary row click/double-click action. */
+    for(int dated=0;dated<2;dated++){
+        Seed();g_tasks[TaskByKey(L"C-3")].due_date=L"2026-12-01";
+        g_tasks[TaskByKey(L"B-2")].due_date=dated?L"2026-12-01":NULL;RefreshTaskList();
+        int row=RowForKey(L"B-2");RECT due;assert(ListView_GetSubItemRect(g_list,row,DUE_COLUMN,LVIR_BOUNDS,&due)&&due.right>due.left);
+        POINT point={(due.left+due.right)/2,(due.top+due.bottom)/2};
+        NMITEMACTIVATE click={.hdr={.hwndFrom=g_list,.idFrom=IDC_TASKS,.code=NM_DBLCLK},.iItem=row,.iSubItem=DUE_COLUMN,.ptAction=point};
+        WindowProcedure(g_window,WM_NOTIFY,IDC_TASKS,(LPARAM)&click);
+        assert(fixture_job&&!wcscmp(((JiraJob*)fixture_job)->key,L"B-2")&&"Double-clicking due cell must activate its own issue");
+        CompleteWorker();assert(fixture_posts==1&&fixture_searches==0&&g_tasks[TaskByKey(L"B-2")].active);
     }
     Seed();StartAndFinish(3);assert(progress_timer);
     WindowProcedure(g_window,WM_DESTROY,0,0);
