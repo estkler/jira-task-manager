@@ -2,11 +2,25 @@
 #define main AboutLayoutMainUnused
 #include "about_settings_test.c"
 #undef main
+static BOOL ActionShown(int id){
+    return (GetWindowLongPtrW(GetDlgItem(u_details,id),GWL_STYLE)&WS_VISIBLE)!=0;
+}
+static COLORREF ActionBorder(int id){
+    HWND button=GetDlgItem(u_details,id);RECT bounds;GetClientRect(button,&bounds);
+    HDC dc=CreateCompatibleDC(NULL);
+    HBITMAP bitmap=CreateBitmap(bounds.right,bounds.bottom,1,32,NULL);
+    HGDIOBJ old=SelectObject(dc,bitmap);
+    DRAWITEMSTRUCT draw={.CtlID=(UINT)id,.hwndItem=button,.hDC=dc,.rcItem=bounds};
+    SendMessageW(u_details,WM_DRAWITEM,id,(LPARAM)&draw);
+    COLORREF color=GetPixel(dc,0,bounds.bottom/2);
+    SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);return color;
+}
 static void CaptureUpdateDetails(const wchar_t *path){
     RECT r;GetClientRect(u_details,&r);BITMAPINFO info={0};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);info.bmiHeader.biWidth=r.right;info.bmiHeader.biHeight=-r.bottom;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;
     HDC dc=CreateCompatibleDC(NULL);void *pixels;HBITMAP bitmap=CreateDIBSection(dc,&info,DIB_RGB_COLORS,&pixels,NULL,0);assert(bitmap);HGDIOBJ old=SelectObject(dc,bitmap);
     UpdateDetailsDraw(u_details,dc);
     for(HWND child=GetWindow(u_details,GW_CHILD);child;child=GetWindow(child,GW_HWNDNEXT)){
+        if(!(GetWindowLongPtrW(child,GWL_STYLE)&WS_VISIBLE))continue;
         RECT q;GetWindowRect(child,&q);MapWindowPoints(NULL,u_details,(POINT*)&q,2);int saved=SaveDC(dc);SetViewportOrgEx(dc,q.left,q.top,NULL);
         IntersectClipRect(dc,0,0,q.right-q.left,q.bottom-q.top);SendMessageW(child,WM_PRINT,(WPARAM)dc,PRF_CLIENT|PRF_ERASEBKGND);RestoreDC(dc,saved);
     }GdiFlush();
@@ -23,17 +37,34 @@ int main(int argc,char **argv){
         wcscpy_s(u_notes,UPDATE_NOTES_CAP,L"## Improvements\n- First change\n- Second change");g_dpi=dpi;g_dark=dark;g_russian=ru;UpdateFonts();RecreateBrushes();UpdateDetailsOpen(s_window);assert(u_details);
         wchar_t text[256];GetWindowTextW(GetDlgItem(u_details,402),text,256);assert(wcsstr(text,L"First change")&&wcsstr(text,L"\r\n")&&!wcsstr(text,L"##"));
         assert(IsWindowEnabled(GetDlgItem(u_details,IDOK))&&"Release notes must appear before download begins");assert(!u_work);
+        assert(ActionBorder(IDOK)==ActionBorder(IDCANCEL)&&"Both actions have the same border at rest");
+        RECT dismiss_bounds,action_bounds;
+        assert(GetWindowRect(GetDlgItem(u_details,IDCANCEL),&dismiss_bounds));
+        assert(GetWindowRect(GetDlgItem(u_details,IDOK),&action_bounds));
+        assert(dismiss_bounds.right<action_bounds.left&&"Close belongs to the left of Download");
         HFONT notes_font=(HFONT)SendMessageW(GetDlgItem(u_details,402),WM_GETFONT,0,0);LOGFONTW details_font;
         UpdateFonts();assert(GetObjectW(notes_font,sizeof(details_font),&details_font)&&"Changing main-window fonts must not delete fonts still used by update details");
         RECT sizing;GetWindowRect(u_details,&sizing);SendMessageW(u_details,WM_DPICHANGED,MAKEWPARAM(dpi,dpi),(LPARAM)&sizing);
         HFONT resized=(HFONT)SendMessageW(GetDlgItem(u_details,402),WM_GETFONT,0,0);assert(GetObjectW(resized,sizeof(details_font),&details_font)&&details_font.lfHeight<0);
         UpdateWork *work=calloc(1,sizeof(*work));work->references=2;work->generation=++u_generation;work->action=1;work->release=u_release;work->received=450;work->owner=g_window;u_work=work;u_state=UPDATE_UI_DOWNLOADING;
         UpdateDetailsRender();GetWindowTextW(GetDlgItem(u_details,403),text,256);assert(wcsstr(text,L"45%"));assert(!IsWindowEnabled(GetDlgItem(u_details,IDOK)));
+        assert(ActionShown(IDOK)&&ActionShown(IDCANCEL)&&IsWindowEnabled(GetDlgItem(u_details,IDCANCEL)));
+        RECT cancel_bounds,download_bounds;
+        assert(GetWindowRect(GetDlgItem(u_details,IDCANCEL),&cancel_bounds));
+        assert(GetWindowRect(GetDlgItem(u_details,IDOK),&download_bounds));
+        assert(EqualRect(&dismiss_bounds,&cancel_bounds)&&EqualRect(&action_bounds,&download_bounds));
         if(argc>1&&dpi==144&&ru){wcscpy_s(u_notes,UPDATE_NOTES_CAP,L"## Изменения\n- Просмотр изменений перед установкой.\n- Прогресс скачивания обновления.\n- Компактная карточка смены статуса.\n\nНастройки и локальные заметки сохранятся.");UpdateDetailsNotes();CaptureUpdateDetails(dark?L"bin/update-details-native-dark.bmp":L"bin/update-details-native-light.bmp");}
         work->received=1000;work->verifying=1;UpdateDetailsRender();GetWindowTextW(GetDlgItem(u_details,403),text,256);assert(!wcsstr(text,L"100%")&&"Completed download must be distinguished from verification");
         UINT generation=u_generation;SendMessageW(u_details,WM_CLOSE,0,0);assert(!u_details&&!u_work&&work->cancel.cancelled&&u_generation>generation&&u_state==UPDATE_UI_AVAILABLE&&u_settings==s_window);
         work->status=UPDATE_OK;UpdateUiHandleMessage(WM_UPDATE_RESULT,0,(LPARAM)work);assert(u_state==UPDATE_UI_AVAILABLE&&"Late cancelled result cannot install or overwrite current state");
-        UpdateDetailsOpen(s_window);u_state=UPDATE_UI_READY;UpdateDetailsRender();assert(IsWindowEnabled(GetDlgItem(u_details,IDOK)));UpdateDetailsClose();u_state=UPDATE_UI_AVAILABLE;
+        UpdateDetailsOpen(s_window);u_state=UPDATE_UI_READY;UpdateDetailsRender();
+        assert(ActionShown(IDOK)&&IsWindowEnabled(GetDlgItem(u_details,IDOK))&&ActionBorder(IDOK)==ActionBorder(IDCANCEL));
+        u_state=UPDATE_UI_APPLYING;UpdateDetailsRender();
+        assert(ActionShown(IDOK)&&ActionShown(IDCANCEL));
+        assert(!IsWindowEnabled(GetDlgItem(u_details,IDOK))&&!IsWindowEnabled(GetDlgItem(u_details,IDCANCEL)));
+        u_state=UPDATE_UI_ERROR;UpdateDetailsRender();
+        assert(ActionShown(IDOK)&&ActionShown(IDCANCEL)&&IsWindowEnabled(GetDlgItem(u_details,IDOK)));
+        UpdateDetailsClose();u_state=UPDATE_UI_AVAILABLE;
     }
     SendMessageW(s_window,WM_COMMAND,IDCANCEL,0);assert(!u_details);DestroyWindow(g_window);DeleteFileW(g_settings_path);puts("Update details: notes, byte percentage, verification, cancellation and late results across DPI/themes/languages passed");return 0;
 }

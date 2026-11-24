@@ -25,7 +25,7 @@
 #include "native_refresh_interval.h"
 #include "native_auto_refresh.h"
 
-#define APP_VERSION L"0.9.42"
+#define APP_VERSION L"0.9.45"
 #define APP_TITLE TASK_MANAGER_TITLE
 #define WM_TRAYICON (WM_APP + 1)
 
@@ -2422,7 +2422,8 @@ static void DrawTransitionButton(TransitionInputDialog *dialog,const DRAWITEMSTR
         int score=dialog->selected_score;
         int hover_id=dialog->hover?GetDlgCtrlID(dialog->hover):0;
         if(hover_id>IDC_TRANSITION_RATING&&hover_id<IDC_TRANSITION_RATING+6&&IsWindowEnabled(dialog->hover))score=hover_id-IDC_TRANSITION_RATING;
-        BOOL filled=!disabled&&id-IDC_TRANSITION_RATING<=score;
+        /* Disabling input during submission must retain the selected rating. */
+        BOOL filled=id-IDC_TRANSITION_RATING<=score;
         COLORREF gold=RGB(255,190,48);
         COLORREF color=filled?gold:MutedColor();
         int width=rect.right-rect.left,height=rect.bottom-rect.top,scale=3;
@@ -5019,7 +5020,7 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
     }
 
     case WM_TRAYICON:
-        if (l_param == WM_LBUTTONDBLCLK || l_param == NIN_BALLOONUSERCLICK) {
+        if (l_param == WM_LBUTTONUP || l_param == WM_LBUTTONDBLCLK || l_param == NIN_BALLOONUSERCLICK) {
             ShowWindow(window, SW_RESTORE);
             SetForegroundWindow(window);
             if(l_param==NIN_BALLOONUSERCLICK&&g_update_notice){g_update_notice=FALSE;OpenSettingsWindow();if(s_window)SettingsTab(1);}

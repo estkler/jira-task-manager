@@ -44,6 +44,31 @@ static void UpdateDetailsDraw(HWND window,HDC dc){
         RECT fill=bar;fill.right=fill.left+MulDiv(fill.right-fill.left,UpdateDetailsPercent(),100);HBRUSH blue=CreateSolidBrush(AccentColor());FillRect(dc,&fill,blue);DeleteObject(blue);RestoreDC(dc,saved);DeleteObject(region);
     }
 }
+static void UpdateDetailsActions(void){
+    HWND action=GetDlgItem(u_details,IDOK),cancel=GetDlgItem(u_details,IDCANCEL);
+    BOOL applying=u_state==UPDATE_UI_APPLYING;
+    BOOL action_ready=u_state==UPDATE_UI_AVAILABLE||u_state==UPDATE_UI_READY||u_state==UPDATE_UI_ERROR;
+    BOOL action_enabled=action_ready&&!u_work&&!UpdateUiBusy()&&!UpdateSettingsAccountBusy();
+    HWND focus=GetFocus();
+
+    const wchar_t *label=g_russian?L"Скачать":L"Download";
+    if(u_state==UPDATE_UI_READY||applying)label=g_russian?L"Установить":L"Install";
+    if(u_state==UPDATE_UI_ERROR||u_state==UPDATE_UI_CHECKING)label=g_russian?L"Повторить":L"Retry";
+    UpdateDetailsText(IDOK,label);
+    UpdateDetailsText(IDCANCEL,u_state==UPDATE_UI_DOWNLOADING?(g_russian?L"Отмена":L"Cancel"):(g_russian?L"Закрыть":L"Close"));
+
+    if(!action_enabled&&u_detail_hover==action)u_detail_hover=NULL;
+    if(applying&&u_detail_hover==cancel)u_detail_hover=NULL;
+    EnableWindow(action,action_enabled);
+    EnableWindow(cancel,!applying);
+    if((focus==action&&!action_enabled)||(focus==cancel&&applying))
+        SetFocus(applying?GetDlgItem(u_details,402):cancel);
+
+    if((int)u_state!=u_detail_state){
+        EnableMenuItem(GetSystemMenu(u_details,FALSE),SC_CLOSE,MF_BYCOMMAND|(applying?MF_GRAYED:MF_ENABLED));
+        DrawMenuBar(u_details);
+    }
+}
 static void UpdateDetailsRender(void){
     if(!u_details||!IsWindow(u_details))return;wchar_t title[128],text[256];
     if(u_detail_dark!=(int)g_dark){u_detail_dark=(int)g_dark;SetWindowTheme(GetDlgItem(u_details,402),g_dark?L"DarkMode_Explorer":L"Explorer",NULL);ApplyWindowCaptionTheme(u_details);RedrawWindow(u_details,NULL,NULL,RDW_INVALIDATE|RDW_ALLCHILDREN);}
@@ -55,9 +80,8 @@ static void UpdateDetailsRender(void){
     else if(u_state==UPDATE_UI_AVAILABLE)wcscpy_s(text,256,g_russian?L"Скачивание начнётся по нажатию «Скачать».":L"Click Download when you're ready.");
     else if(u_state==UPDATE_UI_READY)wcscpy_s(text,256,u_reason[0]?u_reason:(g_russian?L"Файл проверен. Можно установить обновление.":L"File verified. Ready to install."));
     else GetWindowTextW(GetDlgItem(u_settings,235),text,256);
-    UpdateDetailsText(403,text);UpdateDetailsText(IDOK,u_state==UPDATE_UI_READY?(g_russian?L"Установить":L"Install"):u_state==UPDATE_UI_ERROR?(g_russian?L"Повторить":L"Retry"):(g_russian?L"Скачать":L"Download"));
-    UpdateDetailsText(IDCANCEL,downloading?(g_russian?L"Отмена":L"Cancel"):(g_russian?L"Закрыть":L"Close"));
-    EnableWindow(GetDlgItem(u_details,IDOK),!u_work&&!UpdateUiBusy()&&!UpdateSettingsAccountBusy()&&(u_state==UPDATE_UI_AVAILABLE||u_state==UPDATE_UI_READY||u_state==UPDATE_UI_ERROR));
+    UpdateDetailsText(403,text);
+    UpdateDetailsActions();
     if(percent!=u_detail_percent||(int)u_state!=u_detail_state){RECT bar=UpdateDetailsBar(u_details);InvalidateRect(u_details,&bar,FALSE);u_detail_percent=percent;u_detail_state=(int)u_state;}
 }
 static void UpdateDetailsClose(void){HWND window=u_details;u_details=NULL;u_detail_hover=NULL;if(window&&IsWindow(window))DestroyWindow(window);}
@@ -80,9 +104,9 @@ static LRESULT CALLBACK UpdateDetailsProcedure(HWND window,UINT message,WPARAM w
     if(message==WM_CTLCOLORSTATIC||message==WM_CTLCOLOREDIT){HDC dc=(HDC)wp;int id=GetDlgCtrlID((HWND)lp);SetTextColor(dc,id==403?MutedColor():TextColor());SetBkColor(dc,id==402?PanelColor():WindowColor());return (LRESULT)(id==402?g_panel_brush:g_window_brush);}
     if(message==WM_ERASEBKGND)return 1;
     if(message==WM_PAINT||message==WM_PRINTCLIENT){PAINTSTRUCT paint;HDC dc=message==WM_PRINTCLIENT?(HDC)wp:BeginPaint(window,&paint);UpdateDetailsDraw(window,dc);if(message==WM_PAINT)EndPaint(window,&paint);return 0;}
-    if(message==WM_DRAWITEM){DRAWITEMSTRUCT *draw=(DRAWITEMSTRUCT*)lp;RECT r=draw->rcItem;BOOL hover=u_detail_hover==draw->hwndItem;HBRUSH brush=CreateSolidBrush(hover||draw->itemState&ODS_SELECTED?(g_dark?RGB(52,57,64):RGB(231,235,240)):WindowColor());FillRect(draw->hDC,&r,brush);DeleteObject(brush);
+    if(message==WM_DRAWITEM){DRAWITEMSTRUCT *draw=(DRAWITEMSTRUCT*)lp;RECT r=draw->rcItem;BOOL enabled=!(draw->itemState&ODS_DISABLED),hover=enabled&&u_detail_hover==draw->hwndItem;HBRUSH brush=CreateSolidBrush(enabled&&(hover||(draw->itemState&ODS_SELECTED))?(g_dark?RGB(52,57,64):RGB(231,235,240)):WindowColor());FillRect(draw->hDC,&r,brush);DeleteObject(brush);
         SetBkMode(draw->hDC,TRANSPARENT);SetTextColor(draw->hDC,draw->itemState&ODS_DISABLED?MutedColor():TextColor());HGDIOBJ font=SelectObject(draw->hDC,u_detail_font?u_detail_font:g_font);wchar_t text[80];GetWindowTextW(draw->hwndItem,text,80);DrawTextW(draw->hDC,text,-1,&r,DT_SINGLELINE|DT_CENTER|DT_VCENTER|DT_NOPREFIX);SelectObject(draw->hDC,font);
-        brush=CreateSolidBrush(draw->CtlID==IDOK||hover?AccentColor():BorderColor());FrameRect(draw->hDC,&r,brush);DeleteObject(brush);if((draw->itemState&ODS_FOCUS)&&!(draw->itemState&ODS_NOFOCUSRECT)){InflateRect(&r,-UD(3),-UD(3));DrawFocusRect(draw->hDC,&r);}return TRUE;
+        brush=CreateSolidBrush(hover?AccentColor():BorderColor());FrameRect(draw->hDC,&r,brush);DeleteObject(brush);if(enabled&&(draw->itemState&ODS_FOCUS)&&!(draw->itemState&ODS_NOFOCUSRECT)){InflateRect(&r,-UD(3),-UD(3));DrawFocusRect(draw->hDC,&r);}return TRUE;
     }
     if(message==WM_DESTROY){KillTimer(window,1);if(u_detail_font)DeleteObject(u_detail_font);if(u_detail_small)DeleteObject(u_detail_small);if(u_detail_bold)DeleteObject(u_detail_bold);u_detail_font=u_detail_small=u_detail_bold=NULL;return 0;}
     if(message==WM_NCDESTROY&&u_details==window)u_details=NULL;

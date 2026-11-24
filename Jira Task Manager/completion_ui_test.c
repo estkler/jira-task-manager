@@ -13,15 +13,17 @@ static int WINAPI CompletionTestMessage(HWND owner,LPCWSTR text,LPCWSTR title,UI
 #define CreateThread CompletionTestThread
 #define MessageBoxW CompletionTestMessage
 #include "native.c"
-static unsigned long long RatingPixels(TransitionInputDialog *dialog,UINT state,COLORREF *center)
+static unsigned long long RatingPixelsAtScore(TransitionInputDialog *dialog,int score,UINT state,COLORREF *center)
 {
-    HWND star=GetDlgItem(dialog->window,IDC_TRANSITION_RATING+1);RECT bounds;GetClientRect(star,&bounds);
+    HWND star=GetDlgItem(dialog->window,IDC_TRANSITION_RATING+score);RECT bounds;GetClientRect(star,&bounds);
     HDC target=GetDC(star),dc=CreateCompatibleDC(target);HBITMAP bitmap=CreateCompatibleBitmap(target,bounds.right,bounds.bottom);HGDIOBJ old=SelectObject(dc,bitmap);
-    DRAWITEMSTRUCT draw={.CtlID=IDC_TRANSITION_RATING+1,.hwndItem=star,.hDC=dc,.rcItem=bounds,.itemState=state};DrawTransitionButton(dialog,&draw);
+    DRAWITEMSTRUCT draw={.CtlID=IDC_TRANSITION_RATING+score,.hwndItem=star,.hDC=dc,.rcItem=bounds,.itemState=state};SendMessageW(dialog->window,WM_DRAWITEM,draw.CtlID,(LPARAM)&draw);
     unsigned long long hash=1469598103934665603ULL;for(int y=0;y<bounds.bottom;y++)for(int x=0;x<bounds.right;x++){hash^=GetPixel(dc,x,y);hash*=1099511628211ULL;}
     if(center)*center=GetPixel(dc,bounds.right/2,bounds.bottom/2);
     SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);ReleaseDC(star,target);return hash;
 }
+static unsigned long long RatingPixels(TransitionInputDialog *dialog,UINT state,COLORREF *center)
+{return RatingPixelsAtScore(dialog,1,state,center);}
 static HWND completion_test_popup;static BOOL completion_test_disabled;
 static BOOL CALLBACK FindCompletionPopup(HWND window,LPARAM owner)
 {
@@ -54,6 +56,19 @@ int main(void)
     assert(dialog.hover==GetDlgItem(popup,IDC_TRANSITION_RATING+2)&&dialog.selected_score==5);
     assert(RatingPixels(&dialog,ODS_FOCUS,NULL)==RatingPixels(&dialog,0,NULL));
     assert(!GetDlgItem(popup,5501));DestroyWindow(popup);
+    /* The same selected/unselected shapes must survive input locking in both
+       themes, at each scale, and for partial as well as full ratings. */
+    for(int dpi=96;dpi<=192;dpi+=48)for(int dark=0;dark<2;dark++){
+        g_dpi=dpi;g_dark=dark;popup=CreateTransitionInputWindow(&dialog,&transition,L"A-1",FALSE);assert(popup);
+        int scores[]={1,4,5};for(int choice=0;choice<3;choice++){
+            dialog.selected_score=scores[choice];dialog.clicked_score=0;dialog.hover=NULL;
+            for(int i=1;i<=5;i++){
+                HWND star=GetDlgItem(popup,IDC_TRANSITION_RATING+i);EnableWindow(star,TRUE);
+                unsigned long long before=RatingPixelsAtScore(&dialog,i,0,NULL);EnableWindow(star,FALSE);
+                assert(before==RatingPixelsAtScore(&dialog,i,ODS_DISABLED,NULL));
+            }
+        }DestroyWindow(popup);
+    }g_dpi=96;g_dark=FALSE;
     HANDLE watcher=CompletionWatchThread(WatchCompletionModal,g_window);assert(watcher);
     assert(OpenCompletionEditor(&transition,L"A-1",TRUE));WaitForSingleObject(watcher,3000);CloseHandle(watcher);
     assert(!completion_test_disabled&&IsWindowEnabled(g_window)&&IsWindow(completion_test_popup));
@@ -77,7 +92,13 @@ int main(void)
     int starts=completion_test_starts;wcscpy_s(g_snapshot.identity.account_id,256,L"different-account");SendMessageW(popup,WM_COMMAND,IDOK,0);
     assert(completion_test_starts==starts&&IsWindow(popup));wcscpy_s(g_snapshot.identity.account_id,256,L"completion-test-id");
     g_jira_busy=TRUE;SendMessageW(popup,WM_COMMAND,IDOK,0);assert(completion_test_starts==starts&&IsWindow(popup));g_jira_busy=FALSE;
+    editor->dialog.clicked_score=0;editor->dialog.hover=NULL;
+    unsigned long long selected_pixels[5];for(int i=0;i<5;i++)selected_pixels[i]=RatingPixelsAtScore(&editor->dialog,i+1,0,NULL);
     SendMessageW(popup,WM_COMMAND,IDOK,0);assert(completion_test_starts==starts+1&&editor->sending&&g_jira_busy);
+    for(int i=0;i<5;i++){
+        HWND star=GetDlgItem(popup,IDC_TRANSITION_RATING+i+1);assert(!IsWindowEnabled(star));
+        assert(RatingPixelsAtScore(&editor->dialog,i+1,ODS_DISABLED,NULL)==selected_pixels[i]&&"Sending must lock input without erasing the visible selected rating");
+    }
     JiraJob *request=completion_test_job;assert(request->completion_generation==editor->generation&&!wcscmp(request->key,L"A-1")&&!wcscmp(request->transition_option,L"4")&&!wcscmp(request->transition_comment,L"Preserve this draft"));
     SendMessageW(popup,WM_COMMAND,IDOK,0);assert(completion_test_starts==starts+1);
     assert(OpenCompletionEditor(&transition,L"A-2",FALSE));HWND independent=g_completion_editors->dialog.window;
