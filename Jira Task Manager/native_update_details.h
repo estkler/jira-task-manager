@@ -97,7 +97,7 @@ static LRESULT CALLBACK UpdateDetailButton(HWND window,UINT message,WPARAM wp,LP
 }
 static LRESULT CALLBACK UpdateDetailsProcedure(HWND window,UINT message,WPARAM wp,LPARAM lp){
     if(message==WM_CLOSE||(message==WM_KEYDOWN&&wp==VK_ESCAPE)){UpdateDetailsDismiss();return 0;}
-    if(message==WM_COMMAND){int id=LOWORD(wp);if(id==IDCANCEL){UpdateDetailsDismiss();return 0;}if(id==IDOK){if(u_state==UPDATE_UI_READY)UpdateUiBeginInstall(u_settings);else if(u_state==UPDATE_UI_AVAILABLE)UpdateUiBeginDownload(u_settings);else if(u_state==UPDATE_UI_ERROR){if(u_failed_action==1&&u_release.asset_id){u_state=UPDATE_UI_AVAILABLE;UpdateUiBeginDownload(u_settings);}else UpdateUiBeginCheck(u_settings);}return 0;}}
+    if(message==WM_COMMAND){int id=LOWORD(wp);if(id==IDCANCEL){UpdateDetailsDismiss();return 0;}if(id==IDOK){if(u_state==UPDATE_UI_READY)UpdateUiBeginInstall(u_settings);else if(u_state==UPDATE_UI_AVAILABLE)UpdateUiBeginDownload(u_settings);else if(u_state==UPDATE_UI_ERROR)UpdateUiRetry(u_settings);return 0;}}
     if(message==WM_TIMER){UpdateDetailsRender();return 0;}
     if(message==WM_DPICHANGED){u_detail_dpi=HIWORD(wp);UpdateDetailsFonts();RECT *r=(RECT*)lp;SetWindowPos(window,NULL,r->left,r->top,r->right-r->left,r->bottom-r->top,SWP_NOZORDER|SWP_NOACTIVATE);InvalidateRect(window,NULL,FALSE);return 0;}
     if(message==WM_SIZE){UpdateDetailsLayout(window);return 0;}

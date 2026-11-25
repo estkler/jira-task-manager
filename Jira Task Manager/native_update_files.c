@@ -21,28 +21,38 @@ BOOL UpdatePathSafe(const wchar_t *path,BOOL directory){
     CloseHandle(file);return ok;
 }
 UpdateStatus UpdateStageCreate(UpdateStage *out){
-    if(!out)return UPDATE_INVALID;memset(out,0,sizeof(*out));out->directory_lock=INVALID_HANDLE_VALUE;
-    wchar_t temp[MAX_PATH],resolved[MAX_PATH];DWORD n=GetTempPathW(MAX_PATH,temp);if(!n||n>=MAX_PATH)return UPDATE_IO;
+    if(!out){SetLastError(ERROR_INVALID_PARAMETER);return UPDATE_INVALID;}
+    memset(out,0,sizeof(*out));out->directory_lock=INVALID_HANDLE_VALUE;
+    wchar_t temp[MAX_PATH],resolved[MAX_PATH];DWORD n=GetTempPathW(MAX_PATH,temp);
+    if(!n||n>=MAX_PATH){if(n)SetLastError(ERROR_FILENAME_EXCED_RANGE);return UPDATE_IO;}
     HANDLE parent=CreateFileW(temp,FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS,NULL);
     if(parent==INVALID_HANDLE_VALUE)return UPDATE_IO;BOOL valid=canonical_handle(parent,resolved);CloseHandle(parent);
-    if(!valid||!UpdatePathSafe(resolved,TRUE))return UPDATE_IO;size_t end=wcslen(resolved);if(end>3&&resolved[end-1]==L'\\')resolved[end-1]=0;
+    if(!valid||!UpdatePathSafe(resolved,TRUE)){SetLastError(ERROR_INVALID_DATA);return UPDATE_IO;}
+    size_t end=wcslen(resolved);if(end>3&&resolved[end-1]==L'\\')resolved[end-1]=0;
     HANDLE token=NULL;DWORD needed=0;TOKEN_USER *user=NULL;LPWSTR sid=NULL;PSECURITY_DESCRIPTOR sd=NULL;UpdateStatus result=UPDATE_IO;
     if(!OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&token))goto done;
-    GetTokenInformation(token,TokenUser,NULL,0,&needed);if(!needed)goto done;user=malloc(needed);if(!user)goto done;
+    GetTokenInformation(token,TokenUser,NULL,0,&needed);if(!needed)goto done;
+    user=malloc(needed);if(!user){SetLastError(ERROR_OUTOFMEMORY);goto done;}
     if(!GetTokenInformation(token,TokenUser,user,needed,&needed)||!ConvertSidToStringSidW(user->User.Sid,&sid))goto done;
-    wchar_t sddl[256];if(swprintf(sddl,_countof(sddl),L"D:P(A;;FA;;;SY)(A;;FA;;;%ls)",sid)<0||!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl,SDDL_REVISION_1,&sd,NULL))goto done;
+    wchar_t sddl[256];if(swprintf(sddl,_countof(sddl),L"D:P(A;;FA;;;SY)(A;;FA;;;%ls)",sid)<0){SetLastError(ERROR_INSUFFICIENT_BUFFER);goto done;}
+    if(!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl,SDDL_REVISION_1,&sd,NULL))goto done;
     SECURITY_ATTRIBUTES sa={sizeof(sa),sd,FALSE};
     for(int attempt=0;attempt<8;attempt++){
-        BYTE random[16];wchar_t nonce[33];if(BCryptGenRandom(NULL,random,sizeof(random),BCRYPT_USE_SYSTEM_PREFERRED_RNG)<0)goto done;
+        BYTE random[16];wchar_t nonce[33];if(BCryptGenRandom(NULL,random,sizeof(random),BCRYPT_USE_SYSTEM_PREFERRED_RNG)<0){SetLastError(ERROR_GEN_FAILURE);goto done;}
         for(int i=0;i<16;i++)swprintf(nonce+2*i,3,L"%02x",random[i]);
-        if(swprintf(out->directory,MAX_PATH,L"%ls\\JiraTaskUpdate-%ls",resolved,nonce)<0)goto done;
+        if(swprintf(out->directory,MAX_PATH,L"%ls\\JiraTaskUpdate-%ls",resolved,nonce)<0){SetLastError(ERROR_FILENAME_EXCED_RANGE);goto done;}
         if(!CreateDirectoryW(out->directory,&sa)){if(GetLastError()==ERROR_ALREADY_EXISTS)continue;goto done;}
         out->directory_lock=CreateFileW(out->directory,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,NULL);
-        if(out->directory_lock==INVALID_HANDLE_VALUE||!UpdatePathSafe(out->directory,TRUE))goto done;
-        if(swprintf(out->executable,MAX_PATH,L"%ls\\Jira.Task.Manager.exe",out->directory)<0)goto done;
+        if(out->directory_lock==INVALID_HANDLE_VALUE)goto done;
+        if(!UpdatePathSafe(out->directory,TRUE)){SetLastError(ERROR_INVALID_DATA);goto done;}
+        if(swprintf(out->executable,MAX_PATH,L"%ls\\Jira.Task.Manager.exe",out->directory)<0){SetLastError(ERROR_FILENAME_EXCED_RANGE);goto done;}
         result=UPDATE_OK;break;
     }
-done:if(token)CloseHandle(token);if(sid)LocalFree(sid);if(sd)LocalFree(sd);free(user);if(result!=UPDATE_OK)UpdateStageCleanup(out);return result;
+done:;
+    DWORD error=result==UPDATE_OK?ERROR_SUCCESS:GetLastError();
+    if(token)CloseHandle(token);if(sid)LocalFree(sid);if(sd)LocalFree(sd);free(user);
+    if(result!=UPDATE_OK)UpdateStageCleanup(out);
+    SetLastError(error);return result;
 }
 void UpdateStageCleanup(UpdateStage *stage){
     if(!stage)return;

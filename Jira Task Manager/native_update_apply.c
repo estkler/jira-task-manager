@@ -23,12 +23,14 @@ static BOOL digest(const wchar_t *text,BYTE out[32]){
     if(wcslen(text)!=64)return FALSE;for(int i=0;i<32;i++){int n=0;for(int j=0;j<2;j++){wchar_t c=text[2*i+j];int v=c>=L'0'&&c<=L'9'?c-L'0':c>=L'a'&&c<=L'f'?c-L'a'+10:c>=L'A'&&c<=L'F'?c-L'A'+10:-1;if(v<0)return FALSE;n=n*16+v;}out[i]=(BYTE)n;}return TRUE;
 }
 static HANDLE parent_open(const UpdateApplyRequest *r){
-    if(!r||!r->parent_pid||!r->parent_created||!UpdatePathSafe(r->target,FALSE))return NULL;
+    if(!r||!r->parent_pid||!r->parent_created||!UpdatePathSafe(r->target,FALSE)){SetLastError(ERROR_INVALID_DATA);return NULL;}
     HANDLE process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION|SYNCHRONIZE,FALSE,r->parent_pid);if(!process)return NULL;
     FILETIME c,e,k,u;wchar_t image[MAX_PATH];DWORD length=MAX_PATH;
-    BOOL ok=GetProcessTimes(process,&c,&e,&k,&u)&&(((ULONGLONG)c.dwHighDateTime<<32)|c.dwLowDateTime)==r->parent_created&&
-        QueryFullProcessImageNameW(process,0,image,&length)&&!_wcsicmp(image,r->target)&&WaitForSingleObject(process,0)==WAIT_TIMEOUT;
-    if(!ok){CloseHandle(process);return NULL;}return process;
+    DWORD error=ERROR_INVALID_DATA;
+    if(!GetProcessTimes(process,&c,&e,&k,&u)||!QueryFullProcessImageNameW(process,0,image,&length))error=GetLastError();
+    else if((((ULONGLONG)c.dwHighDateTime<<32)|c.dwLowDateTime)==r->parent_created&&
+        !_wcsicmp(image,r->target)&&WaitForSingleObject(process,0)==WAIT_TIMEOUT)return process;
+    CloseHandle(process);SetLastError(error);return NULL;
 }
 static BOOL private_directory(HANDLE directory){
     PSECURITY_DESCRIPTOR sd=NULL;PACL acl=NULL;BOOL ok=FALSE;HANDLE token=NULL;TOKEN_USER *user=NULL;DWORD needed=0;
@@ -61,22 +63,27 @@ static HANDLE stage_lock(const wchar_t *source,wchar_t directory[MAX_PATH]){
 }
 UpdateStatus UpdateLaunchHelperTracked(const UpdateStage *stage,const UpdateApplyRequest *r,HANDLE *ready_event,HANDLE *helper_process){
     if(helper_process)*helper_process=NULL;
-    if(!ready_event)return UPDATE_INVALID;*ready_event=NULL;if(!stage||!r||!_wcsicmp(stage->executable,r->target))return UPDATE_INVALID;
+    if(!ready_event){SetLastError(ERROR_INVALID_PARAMETER);return UPDATE_INVALID;}
+    *ready_event=NULL;if(!stage||!r||!_wcsicmp(stage->executable,r->target)){SetLastError(ERROR_INVALID_PARAMETER);return UPDATE_INVALID;}
     HANDLE parent=parent_open(r);if(!parent)return UPDATE_INVALID;CloseHandle(parent);
-    wchar_t directory[MAX_PATH];HANDLE dir=stage_lock(stage->executable,directory);if(dir==INVALID_HANDLE_VALUE)return UPDATE_INVALID;
+    wchar_t directory[MAX_PATH];HANDLE dir=stage_lock(stage->executable,directory);if(dir==INVALID_HANDLE_VALUE){SetLastError(ERROR_INVALID_DATA);return UPDATE_INVALID;}
     HANDLE file=CreateFileW(stage->executable,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,NULL);
+    DWORD error=file==INVALID_HANDLE_VALUE?GetLastError():ERROR_INVALID_DATA;
     UpdateStatus result=UpdateVerifyFile(file,&r->release);if(result!=UPDATE_OK)goto done;
-    wchar_t random[33],event_name[80],sha[65],command[2048];if(!nonce(random)){result=UPDATE_IO;goto done;}
+    wchar_t random[33],event_name[80],sha[65],command[2048];if(!nonce(random)){error=ERROR_GEN_FAILURE;result=UPDATE_IO;goto done;}
     swprintf(event_name,_countof(event_name),L"Local\\JiraTaskUpdate-%ls",random);HANDLE event=CreateEventW(NULL,TRUE,FALSE,event_name);
-    if(!event||GetLastError()==ERROR_ALREADY_EXISTS){if(event)CloseHandle(event);result=UPDATE_IO;goto done;}
+    error=GetLastError();
+    if(!event||error==ERROR_ALREADY_EXISTS){if(event)CloseHandle(event);result=UPDATE_IO;goto done;}
     for(int i=0;i<32;i++)swprintf(sha+2*i,3,L"%02x",r->release.sha256[i]);
     /* All strings are canonical paths/event names: Windows forbids embedded
        quotes in paths, and neither quoted argument ends with a backslash. */
     int count=swprintf(command,_countof(command),L"\"%ls\" --apply-update %lu %llu \"%ls\" %lu.%lu.%lu %lu %ls \"%ls\"",stage->executable,r->parent_pid,r->parent_created,r->target,r->release.version.major,r->release.version.minor,r->release.version.patch,r->release.size,sha,event_name);
     STARTUPINFOW si={sizeof(si)};PROCESS_INFORMATION pi;
-    if(count<0||!CreateProcessW(stage->executable,command,NULL,NULL,FALSE,CREATE_NO_WINDOW,NULL,directory,&si,&pi)){CloseHandle(event);result=UPDATE_IO;goto done;}
+    if(count<0||!CreateProcessW(stage->executable,command,NULL,NULL,FALSE,CREATE_NO_WINDOW,NULL,directory,&si,&pi)){
+        error=count<0?ERROR_INSUFFICIENT_BUFFER:GetLastError();CloseHandle(event);result=UPDATE_IO;goto done;
+    }
     CloseHandle(pi.hThread);if(helper_process)*helper_process=pi.hProcess;else CloseHandle(pi.hProcess);*ready_event=event;result=UPDATE_OK;
-done:if(file!=INVALID_HANDLE_VALUE)CloseHandle(file);CloseHandle(dir);return result;
+done:if(file!=INVALID_HANDLE_VALUE)CloseHandle(file);CloseHandle(dir);SetLastError(result==UPDATE_OK?ERROR_SUCCESS:error);return result;
 }
 UpdateStatus UpdateLaunchHelper(const UpdateStage *stage,const UpdateApplyRequest *r,HANDLE *ready_event){return UpdateLaunchHelperTracked(stage,r,ready_event,NULL);}
 static BOOL move_file(const UpdateApplyOps *ops,HANDLE file,const wchar_t *from,const wchar_t *to){
@@ -94,15 +101,52 @@ static BOOL start_default(const wchar_t *target,const wchar_t *directory){
     STARTUPINFOW si={sizeof(si)};PROCESS_INFORMATION pi;if(!CreateProcessW(target,command,NULL,NULL,FALSE,0,NULL,directory,&si,&pi))return FALSE;
     CloseHandle(pi.hThread);CloseHandle(pi.hProcess);return TRUE;
 }
+static HANDLE open_installed_for_update(const wchar_t *path,DWORD *sharing_retries)
+{
+    /* Antivirus and indexers can briefly open the running image without
+       FILE_SHARE_DELETE. Retry only sharing/locking errors before handoff. */
+    ULONGLONG deadline=GetTickCount64()+1200;
+    for(;;){
+        HANDLE file=CreateFileW(path,GENERIC_READ|DELETE,FILE_SHARE_READ|FILE_SHARE_DELETE,NULL,
+            OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,NULL);
+        if(file!=INVALID_HANDLE_VALUE)return file;
+        DWORD error=GetLastError();
+        if((error!=ERROR_SHARING_VIOLATION&&error!=ERROR_LOCK_VIOLATION)||GetTickCount64()>=deadline){
+            SetLastError(error);return INVALID_HANDLE_VALUE;
+        }
+        ++*sharing_retries;
+        Sleep(80);
+    }
+}
 static BOOL same_file(HANDLE a,HANDLE b){BY_HANDLE_FILE_INFORMATION x,y;return GetFileInformationByHandle(a,&x)&&GetFileInformationByHandle(b,&y)&&x.dwVolumeSerialNumber==y.dwVolumeSerialNumber&&x.nFileIndexHigh==y.nFileIndexHigh&&x.nFileIndexLow==y.nFileIndexLow;}
 static BOOL copy_locked(HANDLE source,HANDLE target){
     BYTE buffer[16384];DWORD got,written;LARGE_INTEGER zero={0};if(!SetFilePointerEx(source,zero,NULL,FILE_BEGIN))return FALSE;
     while(ReadFile(source,buffer,sizeof(buffer),&got,NULL)){if(!got)return FlushFileBuffers(target);if(!WriteFile(target,buffer,got,&written,NULL)||written!=got)return FALSE;}return FALSE;
 }
-static void result_log(const wchar_t *directory,const wchar_t *random,UpdateStatus status){
-    wchar_t path[MAX_PATH];if(swprintf(path,MAX_PATH,L"%ls\\Jira-update-%ls.log",directory,random)<0||!UpdatePathSafe(directory,TRUE))return;
-    HANDLE f=CreateFileW(path,GENERIC_WRITE,0,NULL,CREATE_NEW,FILE_ATTRIBUTE_NORMAL|FILE_FLAG_OPEN_REPARSE_POINT,NULL);if(f==INVALID_HANDLE_VALUE)return;
-    char text[80];int count=snprintf(text,sizeof(text),"Native update result: %u\r\n",(unsigned)status);DWORD written;WriteFile(f,text,count,&written,NULL);FlushFileBuffers(f);CloseHandle(f);
+static HANDLE open_result_log(const wchar_t *directory,const wchar_t *random){
+    wchar_t path[MAX_PATH];
+    if(!UpdatePathSafe(directory,TRUE)||swprintf(path,MAX_PATH,L"%ls\\Jira-update-%ls.log",directory,random)<0)
+        return INVALID_HANDLE_VALUE;
+    return CreateFileW(path,GENERIC_WRITE,FILE_SHARE_READ, NULL,CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL|FILE_FLAG_OPEN_REPARSE_POINT,NULL);
+}
+static void result_log(const UpdateApplyRequest *request,const wchar_t *directory,const wchar_t *random,
+    UpdateStatus status,const char *step,const UpdateApplyFailure *failure,DWORD sharing_retries){
+    wchar_t diagnostics[MAX_PATH];
+    HANDLE file=TaskManagerDiagnosticsDirectory(request->target,diagnostics,MAX_PATH)?
+        open_result_log(diagnostics,random):INVALID_HANDLE_VALUE;
+    if(file==INVALID_HANDLE_VALUE)file=open_result_log(directory,random);
+    if(file==INVALID_HANDLE_VALUE)return;
+    SYSTEMTIME now;GetLocalTime(&now);
+    char text[384];DWORD written;
+    int count=snprintf(text,sizeof(text),
+        "Native update result: %u\r\n"
+        "%04u-%02u-%02u %02u:%02u:%02u | parent_pid=%lu | version=%lu.%lu.%lu | step=%s | win32=%lu | rollback_win32=%lu | sharing_retries=%lu\r\n",
+        (unsigned)status,now.wYear,now.wMonth,now.wDay,now.wHour,now.wMinute,now.wSecond,
+        request->parent_pid,request->release.version.major,request->release.version.minor,
+        request->release.version.patch,step,failure->windows_error,failure->rollback_error,sharing_retries);
+    if(count>0&&count<(int)sizeof(text))WriteFile(file,text,(DWORD)count,&written,NULL);
+    FlushFileBuffers(file);CloseHandle(file);
 }
 BOOL UpdateFormatApplyFailure(const UpdateApplyFailure *f,BOOL ru,wchar_t *text,size_t capacity){
     if(!f||!text||!capacity||f->phase<UPDATE_APPLY_CHECK_TARGET||f->phase>UPDATE_APPLY_START)return FALSE;
@@ -125,7 +169,9 @@ static void report_failure(const UpdateApplyFailure *failure){
 int UpdateRunHelperUsing(int argc,wchar_t **argv,const UpdateApplyOps *ops){
     UpdateStatus result=UPDATE_INVALID;UpdateApplyRequest r={0};ULONGLONG n;wchar_t source[MAX_PATH],source_dir[MAX_PATH],target_dir[MAX_PATH],random[33]={0},candidate[MAX_PATH]={0},backup[MAX_PATH]={0};
     HANDLE source_lock=INVALID_HANDLE_VALUE,target_lock=INVALID_HANDLE_VALUE,file=INVALID_HANDLE_VALUE,old=INVALID_HANDLE_VALUE,parent=NULL,event=NULL,new_file=INVALID_HANDLE_VALUE;BOOL backed_up=FALSE,installed=FALSE,candidate_owned=FALSE,parent_exited=FALSE;
-    UpdateApplyFailure failure={.phase=UPDATE_APPLY_CHECK_TARGET,.windows_error=ERROR_INVALID_DATA};
+    UpdateApplyFailure failure={.phase=UPDATE_APPLY_CHECK_TARGET};
+    const char *step="check_target_directory";
+    DWORD sharing_retries=0;
     if(argc!=9||!argv||wcscmp(argv[1],L"--apply-update")||!number(argv[2],MAXDWORD,&n)||!n)return result;r.parent_pid=(DWORD)n;
     if(!number(argv[3],~(ULONGLONG)0,&r.parent_created)||!r.parent_created||wcslen(argv[4])>=MAX_PATH||!dirname(argv[4],target_dir))return result;
     wcscpy_s(r.target,MAX_PATH,argv[4]);if(!UpdateParseVersion(argv[5],&r.release.version)||!number(argv[6],UPDATE_EXE_LIMIT,&n)||!n||!digest(argv[7],r.release.sha256))return result;r.release.size=(DWORD)n;
@@ -134,26 +180,45 @@ int UpdateRunHelperUsing(int argc,wchar_t **argv,const UpdateApplyOps *ops){
     for(size_t i=prefix_length;i<prefix_length+32;i++)if(!((argv[8][i]>=L'0'&&argv[8][i]<=L'9')||(argv[8][i]>=L'a'&&argv[8][i]<=L'f')))return result;
     DWORD length=GetModuleFileNameW(NULL,source,MAX_PATH);if(!length||length>=MAX_PATH||!_wcsicmp(source,r.target)||!(ops&&ops->nonce?ops->nonce(random):nonce(random)))return result;
     if(!UpdatePathSafe(target_dir,TRUE))return result;
-    target_lock=CreateFileW(target_dir,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,NULL);if(target_lock==INVALID_HANDLE_VALUE)goto done;
-    parent=parent_open(&r);if(!parent)goto done;
-    source_lock=stage_lock(source,source_dir);if(source_lock==INVALID_HANDLE_VALUE)goto done;
-    file=CreateFileW(source,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,NULL);if(UpdateVerifyFile(file,&r.release)!=UPDATE_OK)goto done;
-    old=CreateFileW(r.target,GENERIC_READ|DELETE,FILE_SHARE_READ|FILE_SHARE_DELETE,NULL,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,NULL);
-    UpdateRelease old_release;if(old==INVALID_HANDLE_VALUE){result=UPDATE_BUSY;goto done;}
+    target_lock=CreateFileW(target_dir,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,NULL);
+    if(target_lock==INVALID_HANDLE_VALUE){failure.windows_error=GetLastError();goto done;}
+    step="check_running_app";parent=parent_open(&r);if(!parent){failure.windows_error=GetLastError();goto done;}
+    step="check_staging_directory";source_lock=stage_lock(source,source_dir);if(source_lock==INVALID_HANDLE_VALUE)goto done;
+    step="open_staged_exe";file=CreateFileW(source,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,NULL);
+    if(file==INVALID_HANDLE_VALUE){failure.windows_error=GetLastError();goto done;}
+    step="verify_staged_exe";if(UpdateVerifyFile(file,&r.release)!=UPDATE_OK)goto done;
+    step="open_installed_exe";
+    old=open_installed_for_update(r.target,&sharing_retries);
+    UpdateRelease old_release;if(old==INVALID_HANDLE_VALUE){failure.windows_error=GetLastError();result=UPDATE_BUSY;goto done;}
     BY_HANDLE_FILE_INFORMATION old_info;
-    if(UpdateInspectFile(old,&old_release)!=UPDATE_OK||UpdateCompareVersion(r.release.version,old_release.version)<=0||same_file(file,old)||!GetFileInformationByHandle(old,&old_info)||old_info.nNumberOfLinks!=1)goto done;
-    event=OpenEventW(EVENT_MODIFY_STATE,FALSE,argv[8]);if(!event||!SetEvent(event))goto done;
-    if(WaitForSingleObject(parent,ops?ops->parent_timeout_ms:60000)!=WAIT_OBJECT_0){result=UPDATE_BUSY;goto done;}
+    step="verify_installed_exe";if(UpdateInspectFile(old,&old_release)!=UPDATE_OK)goto done;
+    step="check_version";if(UpdateCompareVersion(r.release.version,old_release.version)<=0)goto done;
+    step="check_file_identity";if(same_file(file,old))goto done;
+    step="read_installed_file_info";if(!GetFileInformationByHandle(old,&old_info)){failure.windows_error=GetLastError();goto done;}
+    step="check_installed_links";if(old_info.nNumberOfLinks!=1)goto done;
+    step="prepare_target_names";
+    int candidate_length=swprintf(candidate,MAX_PATH,L"%ls\\Jira-update-%ls.candidate.exe",target_dir,random);
+    int backup_length=swprintf(backup,MAX_PATH,L"%ls\\Jira-update-%ls.backup.exe",target_dir,random);
+    if(candidate_length<0||candidate_length>=MAX_PATH||backup_length<0||backup_length>=MAX_PATH){
+        failure.windows_error=ERROR_FILENAME_EXCED_RANGE;result=UPDATE_IO;goto done;
+    }
+    step="open_ready_event";event=OpenEventW(EVENT_MODIFY_STATE,FALSE,argv[8]);if(!event){failure.windows_error=GetLastError();goto done;}
+    step="signal_ready";if(!SetEvent(event)){failure.windows_error=GetLastError();goto done;}
+    step="wait_parent_exit";
+    DWORD wait=WaitForSingleObject(parent,ops?ops->parent_timeout_ms:60000);
+    if(wait!=WAIT_OBJECT_0){failure.windows_error=wait==WAIT_TIMEOUT?ERROR_TIMEOUT:GetLastError();result=UPDATE_BUSY;goto done;}
     parent_exited=TRUE;wcscpy_s(failure.target,MAX_PATH,r.target);
+    step="recheck_installed_exe";
     HANDLE check=CreateFileW(r.target,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_DELETE,NULL,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,NULL);
-    BOOL unchanged=check!=INVALID_HANDLE_VALUE&&same_file(old,check)&&UpdatePathSafe(r.target,FALSE)&&UpdatePathSafe(target_dir,TRUE);if(check!=INVALID_HANDLE_VALUE)CloseHandle(check);if(!unchanged)goto done;
-    failure.original_available=TRUE;failure.phase=UPDATE_APPLY_CREATE;
-    if(swprintf(candidate,MAX_PATH,L"%ls\\Jira-update-%ls.candidate.exe",target_dir,random)<0||swprintf(backup,MAX_PATH,L"%ls\\Jira-update-%ls.backup.exe",target_dir,random)<0){result=UPDATE_IO;goto done;}
+    if(check==INVALID_HANDLE_VALUE){failure.windows_error=GetLastError();goto done;}
+    BOOL unchanged=same_file(old,check)&&UpdatePathSafe(r.target,FALSE)&&UpdatePathSafe(target_dir,TRUE);
+    CloseHandle(check);if(!unchanged)goto done;
+    failure.original_available=TRUE;failure.phase=UPDATE_APPLY_CREATE;step="create_candidate";
     new_file=CreateFileW(candidate,GENERIC_READ|GENERIC_WRITE|DELETE,FILE_SHARE_READ|FILE_SHARE_DELETE,NULL,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,NULL);if(new_file==INVALID_HANDLE_VALUE){failure.windows_error=GetLastError();result=UPDATE_IO;goto done;}
     candidate_owned=TRUE;
-    failure.phase=UPDATE_APPLY_COPY;
+    failure.phase=UPDATE_APPLY_COPY;step="copy_candidate";
     if(!(ops&&ops->copy?ops->copy(file,new_file):copy_locked(file,new_file))){failure.windows_error=GetLastError();result=UPDATE_IO;goto done;}
-    failure.phase=UPDATE_APPLY_VERIFY;
+    failure.phase=UPDATE_APPLY_VERIFY;step="verify_candidate";
     if(UpdateVerifyFile(new_file,&r.release)!=UPDATE_OK){failure.windows_error=ERROR_INVALID_DATA;result=UPDATE_INVALID;goto done;}
     /* Drop this handle's write access before launching: the read-only handle
        below denies any other writer while allowing our exact renames. */
@@ -161,18 +226,18 @@ int UpdateRunHelperUsing(int argc,wchar_t **argv,const UpdateApplyOps *ops){
     if(new_file==INVALID_HANDLE_VALUE){failure.windows_error=GetLastError();result=UPDATE_IO;goto done;}
     if(UpdateVerifyFile(new_file,&r.release)!=UPDATE_OK){failure.windows_error=ERROR_INVALID_DATA;result=UPDATE_INVALID;goto done;}
     BOOL (*start)(const wchar_t*,const wchar_t*)=ops&&ops->start?ops->start:start_default;
-    failure.phase=UPDATE_APPLY_BACKUP;
+    failure.phase=UPDATE_APPLY_BACKUP;step="backup_exe";
     if(!handle_path_equals(old,r.target)){failure.windows_error=ERROR_INVALID_DATA;result=UPDATE_INVALID;goto done;}
     if(!move_file(ops,old,r.target,backup)){failure.windows_error=GetLastError();result=UPDATE_IO;goto done;}backed_up=TRUE;failure.original_available=FALSE;
-    failure.phase=UPDATE_APPLY_REPLACE;
+    failure.phase=UPDATE_APPLY_REPLACE;step="replace_exe";
     if(!move_file(ops,new_file,candidate,r.target)){failure.windows_error=GetLastError();result=UPDATE_IO;goto restore;}installed=TRUE;
     CloseHandle(new_file);new_file=CreateFileW(r.target,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,NULL);
-    failure.phase=UPDATE_APPLY_VERIFY;
+    failure.phase=UPDATE_APPLY_VERIFY;step="verify_replacement";
     if(new_file==INVALID_HANDLE_VALUE){failure.windows_error=GetLastError();result=UPDATE_IO;goto restore;}
     if(!UpdatePathSafe(r.target,FALSE)||UpdateVerifyFile(new_file,&r.release)!=UPDATE_OK){failure.windows_error=ERROR_INVALID_DATA;result=UPDATE_INVALID;goto restore;}
-    failure.phase=UPDATE_APPLY_START;
+    failure.phase=UPDATE_APPLY_START;step="start_updated_app";
     if(!start(r.target,target_dir)){failure.windows_error=GetLastError();result=UPDATE_IO;goto restore;}
-    result=UPDATE_OK;goto done;
+    result=UPDATE_OK;step="complete";goto done;
 restore:
     if(installed){
         if(new_file!=INVALID_HANDLE_VALUE)CloseHandle(new_file);
@@ -188,7 +253,9 @@ done:
     /* Backup is never deleted. If restoration fails it remains recoverable. */
     if(backed_up)wcscpy_s(failure.backup,MAX_PATH,backup);
     if(event)CloseHandle(event);if(parent)CloseHandle(parent);if(source_lock!=INVALID_HANDLE_VALUE)CloseHandle(source_lock);if(target_lock!=INVALID_HANDLE_VALUE)CloseHandle(target_lock);
-    if(parent_exited&&result!=UPDATE_OK){if(!failure.windows_error)failure.windows_error=ERROR_GEN_FAILURE;(ops&&ops->report?ops->report:report_failure)(&failure);}
-    if(random[0])result_log(target_dir,random,result);return result;
+    if(result!=UPDATE_OK&&!failure.windows_error)failure.windows_error=result==UPDATE_INVALID?ERROR_INVALID_DATA:ERROR_GEN_FAILURE;
+    if(random[0])result_log(&r,target_dir,random,result,step,&failure,sharing_retries);
+    if(parent_exited&&result!=UPDATE_OK)(ops&&ops->report?ops->report:report_failure)(&failure);
+    return result;
 }
 int UpdateRunHelper(int argc,wchar_t **argv){return UpdateRunHelperUsing(argc,argv,NULL);}

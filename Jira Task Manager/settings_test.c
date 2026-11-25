@@ -119,7 +119,9 @@ static void test_update_spawn_failure(HWND settings){
     u_state=UPDATE_UI_READY;update_fail_thread=update_confirm_install=TRUE;UpdateUiBeginInstall(settings);update_fail_thread=update_confirm_install=FALSE;
     assert(update_launched_child);DWORD wait=WaitForSingleObject(update_launched_child,1000);
     if(wait!=WAIT_OBJECT_0){TerminateProcess(update_launched_child,UPDATE_CANCELLED);WaitForSingleObject(update_launched_child,2000);}CloseHandle(update_launched_child);update_launched_child=NULL;
-    assert(wait==WAIT_OBJECT_0);assert(IsWindow(g_window)&&!g_allow_close&&!u_work);UpdateUiCancel();UpdateUiAttach(settings);
+    assert(wait==WAIT_OBJECT_0);assert(IsWindow(g_window)&&!g_allow_close&&!u_work);
+    assert(UpdateCanRetryInstall()&&GetFileAttributesW(u_stage.executable)!=INVALID_FILE_ATTRIBUTES);
+    UpdateUiCancel();assert(!u_stage.executable[0]);UpdateUiAttach(settings);
 }
 static void test_update_state_save(void){
     wchar_t temp[MAX_PATH],path[MAX_PATH],previous[MAX_PATH],stored[64];GetTempPathW(MAX_PATH,temp);assert(GetTempFileNameW(temp,L"uts",0,path));wcscpy_s(previous,MAX_PATH,g_settings_path);wcscpy_s(g_settings_path,MAX_PATH,path);ULONGLONG started=g_workday_started;g_workday_started=123456789;
@@ -138,6 +140,7 @@ static void test_update_ready_rechecks_real_helper(HWND settings){
     if(wait!=WAIT_OBJECT_0){TerminateProcess(update_launched_child,UPDATE_CANCELLED);WaitForSingleObject(update_launched_child,2000);}CloseHandle(update_launched_child);update_launched_child=NULL;
     assert(wait==WAIT_OBJECT_0&&IsWindow(g_window)&&!u_handoff&&!g_allow_close);
     assert(u_state==UPDATE_UI_ERROR&&u_error==UPDATE_BUSY&&wcsstr(u_reason,L"черновики"));
+    assert(UpdateCanRetryInstall()&&GetFileAttributesW(u_stage.executable)!=INVALID_FILE_ATTRIBUTES);
     wchar_t draft[16];GetWindowTextW(input,draft,16);assert(!wcscmp(draft,L"draft"));
     memset(&g_attached_popover,0,sizeof(g_attached_popover));DestroyWindow(panel);UpdateUiCancel();UpdateUiAttach(settings);
 }

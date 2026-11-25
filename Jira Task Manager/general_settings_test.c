@@ -46,13 +46,13 @@ static void layout_contract(HWND settings){
         assert(label.right<=value.left&&value.bottom<=refresh.top&&refresh.left==S(26)&&refresh.right==S(SETTINGS_WIDTH_DIP-26));
     }
     SettingsTab(3);assert(!visible(s_interval)&&visible(SettingsItem(214))&&visible(SettingsItem(213))&&visible(SettingsItem(257))&&!visible(s_notifications));
-    const int tab_sequence[]={201,214,224,225,246,213,257,267,IDCANCEL,IDOK};
+    const int tab_sequence[]={201,214,275,224,225,246,213,257,267,IDCANCEL,IDOK};
     for(int i=1;i<_countof(tab_sequence);i++){
         HWND next=GetNextDlgTabItem(settings,SettingsItem(tab_sequence[i-1]),FALSE);
         if(next!=SettingsItem(tab_sequence[i]))fprintf(stderr,"Keyboard order from %d: got %d, expected %d\n",tab_sequence[i-1],GetDlgCtrlID(next),tab_sequence[i]);
         assert(next==SettingsItem(tab_sequence[i])&&"General keyboard navigation must follow its visible top-to-bottom order");
     }
-    int ids[]={247,214,248,224,225,246,222,213,257};RECT prior={0};
+    int ids[]={247,214,275,248,224,225,246,222,213,257};RECT prior={0};
     for(int i=0;i<_countof(ids);i++){
         HWND item=SettingsItem(ids[i]);assert(item&&visible(item));RECT bounds=relative(item,settings);
         assert(bounds.left>=S(26)&&bounds.right<=S(SETTINGS_WIDTH_DIP-26)&&bounds.top>=prior.bottom);prior=bounds;
@@ -89,6 +89,12 @@ static void layout_contract(HWND settings){
     SetWindowTextW(SettingsItem(259),L"7");SendMessageW(s_advanced_window,WM_CLOSE,0,0);
 }
 static void tray_contract(HWND settings){
+    HWND widget=SettingsItem(275);
+    assert(widget&&SendMessageW(widget,BM_GETCHECK,0,0)==BST_UNCHECKED);
+    SendMessageW(widget,BM_SETCHECK,BST_CHECKED,0);
+    assert(UpdateSettingsDirty()&&GetPrivateProfileIntW(L"Interface",L"DesktopWidget",0,g_settings_path)==0);
+    ResetSettingsDraft();
+    assert(SendMessageW(widget,BM_GETCHECK,0,0)==BST_UNCHECKED);
     HWND slider=SettingsItem(213);wchar_t class_name[80];GetClassNameW(slider,class_name,80);
     assert(!wcscmp(class_name,TRACKBAR_CLASSW)&&"Tray count must be bounded by a native slider, not free text");
     assert(SendMessageW(slider,TBM_GETRANGEMIN,0,0)==1&&SendMessageW(slider,TBM_GETRANGEMAX,0,0)==30&&SendMessageW(slider,TBM_GETPOS,0,0)==20);
@@ -108,7 +114,9 @@ static void tray_contract(HWND settings){
     FreezeSettings(FALSE);assert(IsWindowEnabled(slider)&&IsWindowEnabled(SettingsItem(257))&&IsWindowEnabled(SettingsItem(224)));
     SendMessageW(slider,TBM_SETPOS,TRUE,17);SendMessageW(settings,WM_HSCROLL,TB_THUMBTRACK,(LPARAM)slider);
     SettingsTab(2);SettingsTab(0);SettingsTab(3);assert(SendMessageW(slider,TBM_GETPOS,0,0)==17&&UpdateSettingsDirty());
+    SendMessageW(widget,BM_SETCHECK,BST_CHECKED,0);
     assert(SaveNativePreferences()&&g_tray_task_count==17&&GetPrivateProfileIntW(L"Jira",L"TrayTaskCount",0,g_settings_path)==17);
+    assert(GetPrivateProfileIntW(L"Interface",L"DesktopWidget",0,g_settings_path)==1);
     SendMessageW(slider,TBM_SETPOS,TRUE,23);HWND owned=s_advanced_window;DestroyWindow(settings);assert(!IsWindow(owned));
     LoadSettings();assert(g_tray_task_count==17);
 }
@@ -121,12 +129,17 @@ int main(int argc,char **argv){
     WNDCLASSW cls={.lpfnWndProc=SettingsProcedure,.hInstance=g_instance,.lpszClassName=L"GeneralSettingsFixture"};assert(RegisterClassW(&cls));
     for(int dpi=96;dpi<=192;dpi+=48)for(int language=0;language<2;language++)for(int dark=0;dark<2;dark++)for(int density=0;density<2;density++){
         g_dpi=dpi;g_russian=language;g_dark=dark;g_density=density;RecreateBrushes();
-        assert(WritePrivateProfileStringW(L"Jira",L"TrayTaskCount",L"20",g_settings_path));LoadSettings();
+        assert(WritePrivateProfileStringW(L"Jira",L"TrayTaskCount",L"20",g_settings_path));
+        assert(WritePrivateProfileStringW(L"Interface",L"DesktopWidget",NULL,g_settings_path));LoadSettings();
         HWND settings=CreateWindowW(cls.lpszClassName,L"",WS_POPUP,30000,30000,S(SETTINGS_WIDTH_DIP),S(SETTINGS_HEIGHT_DIP),g_window,NULL,g_instance,NULL);assert(settings);
         if(argc>1&&!strcmp(argv[1],"slider"))tray_contract(settings);
         else {layout_contract(settings);tray_contract(settings);}
         settings=CreateWindowW(cls.lpszClassName,L"",WS_POPUP,30000,30000,S(SETTINGS_WIDTH_DIP),S(SETTINGS_HEIGHT_DIP),g_window,NULL,g_instance,NULL);assert(settings);
-        assert(SendMessageW(SettingsItem(213),TBM_GETPOS,0,0)==17);DestroyWindow(settings);
+        assert(SendMessageW(SettingsItem(213),TBM_GETPOS,0,0)==17);
+        assert(SendMessageW(SettingsItem(275),BM_GETCHECK,0,0)==BST_CHECKED);
+        SendMessageW(SettingsItem(275),BM_SETCHECK,BST_UNCHECKED,0);
+        assert(SaveNativePreferences()&&GetPrivateProfileIntW(L"Interface",L"DesktopWidget",1,g_settings_path)==0);
+        DestroyWindow(settings);
     }
     DestroyWindow(g_window);assert(DeleteFileW(g_settings_path));
     puts("General settings: four native pages, owned Advanced window, tray slider endpoints/all integers, drafts, persistence, busy guards and RU/EN/DPI/themes passed");return 0;

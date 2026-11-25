@@ -25,7 +25,7 @@
 #include "native_refresh_interval.h"
 #include "native_auto_refresh.h"
 
-#define APP_VERSION L"0.9.45"
+#define APP_VERSION L"0.9.48"
 #define APP_TITLE TASK_MANAGER_TITLE
 #define WM_TRAYICON (WM_APP + 1)
 
@@ -279,6 +279,7 @@ static int g_tab = 1;
 static BOOL g_show_tab_task_counts = TRUE;
 static BOOL g_show_all_tab = FALSE;
 static BOOL g_show_done_tab = TRUE;
+static BOOL g_desktop_widget_enabled;
 static BOOL g_reported_scope;
 static ULONGLONG g_filter_masks[6] = { ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull };
 static ULONGLONG g_workday_started;
@@ -370,6 +371,8 @@ static void UpdateCommentAttention(ULONGLONG now);
 static BOOL SaveSettings(void);
 static ULONGLONG CurrentFileTime(void);
 static void UpdateTimer(void);
+static void RefreshDesktopWidgetTask(void);
+static void UpdateDesktopWidgetTime(void);
 static void UpdateSettingsLanguage(void);
 static void RefreshSettingsAccountInfo(void);
 static void BeginStartEdit(void);
@@ -517,6 +520,7 @@ static void LoadSettings(void)
     g_show_tab_task_counts=GetPrivateProfileIntW(L"Interface",L"ShowTabTaskCounts",1,g_settings_path)!=0;
     g_show_all_tab=GetPrivateProfileIntW(L"Interface",L"ShowAllTab",0,g_settings_path)!=0;
     g_show_done_tab=GetPrivateProfileIntW(L"Interface",L"ShowDoneTab",1,g_settings_path)!=0;
+    g_desktop_widget_enabled=GetPrivateProfileIntW(L"Interface",L"DesktopWidget",0,g_settings_path)!=0;
     if((!g_show_all_tab&&g_tab==0)||(!g_show_done_tab&&g_tab==2))g_tab=1;
     wchar_t value[64] = L"";
     g_refresh_minutes=NativeRefreshIntervalNormalize((int)GetPrivateProfileIntW(L"Jira",L"RefreshMinutes",30,g_settings_path));
@@ -785,6 +789,7 @@ static void RefreshTaskList(void)
     UpdateCommentAttention(GetTickCount64());
     BookmarkPresent();
     RepositionAnchoredTaskPopovers();
+    RefreshDesktopWidgetTask();
 }
 
 static void UpdateScopeLabels(void)
@@ -855,6 +860,7 @@ static void UpdateTimer(void)
     if(g_timer_overrun)
         wcscat_s(text,_countof(text),g_russian?L" · Пора домой \xD83E\xDD17":L" · Time to go home \xD83E\xDD17");
     SetWindowTextW(g_timer, text);
+    UpdateDesktopWidgetTime();
     RefreshVisibleTimerTooltip();
     if(was_overrun!=g_timer_overrun&&g_window&&g_settings){
         RECT client;GetClientRect(g_window,&client);LayoutFooterControls(client.right,client.bottom);
@@ -2331,6 +2337,17 @@ static void MarkNativeMenuPlain(HMENU menu)
         MENUITEMINFOW info={0};info.cbSize=sizeof(info);info.fMask=MIIM_DATA;
         if(GetMenuItemInfoW(menu,i,TRUE,&info)&&info.dwItemData)((PopupItem*)info.dwItemData)->plain=TRUE;
     }
+}
+
+static BOOL MeasureNativeMenuItem(HWND window,MEASUREITEMSTRUCT *measure)
+{
+    if(measure->CtlType!=ODT_MENU||!measure->itemData)return FALSE;
+    PopupItem *item=(PopupItem*)measure->itemData;
+    HDC dc=GetDC(window);HGDIOBJ font=SelectObject(dc,g_font);SIZE size={0};
+    GetTextExtentPoint32W(dc,item->text,(int)wcslen(item->text),&size);
+    SelectObject(dc,font);ReleaseDC(window,dc);
+    measure->itemWidth=size.cx+D(item->plain?12:32);measure->itemHeight=D(item->separator?9:28);
+    return TRUE;
 }
 
 static HMENU CreateStatusTransitionsMenu(const JiraTransitions *transitions)
@@ -4434,23 +4451,28 @@ static void ToggleTimerFormat(void)
     RECT client;GetClientRect(g_window,&client);LayoutControls(client.right,client.bottom);
 }
 
-static void ShowTimerMenu(void)
+static int TrackWorkdayMenu(HWND owner,POINT anchor,UINT alignment)
 {
     HMENU menu = CreateNativeMenu();
     AddNativeMenuItem(menu, MF_STRING, IDM_TIMER_RESET,
         g_russian ? L"Изменить начало дня…" : L"Change start time…");
     AddNativeMenuItem(menu, MF_STRING, IDM_TIMER_PORTAL,
         g_russian ? L"Анализ рабочего времени ↗" : L"Work time analysis ↗");
-    RECT timer_rect;
-    GetWindowRect(g_timer, &timer_rect);
     MarkNativeMenuPlain(menu);
+    int command=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_LEFTALIGN|alignment,anchor.x,anchor.y,0,owner,NULL);
+    DestroyNativeMenu(menu);
+    return command;
+}
+
+static void ShowTimerMenu(void)
+{
+    RECT timer_rect;
+    GetWindowRect(g_timer,&timer_rect);
     RECT visible_frame;
     if(FAILED(DwmGetWindowAttribute(g_window,DWMWA_EXTENDED_FRAME_BOUNDS,&visible_frame,sizeof(visible_frame))))
         GetWindowRect(g_window,&visible_frame);
     POINT anchor=TimerMenuAnchor(timer_rect,visible_frame);
-    int command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN,
-        anchor.x, anchor.y, 0, g_window, NULL);
-    DestroyNativeMenu(menu);
+    int command=TrackWorkdayMenu(g_window,anchor,TPM_TOPALIGN);
     if (command == IDM_TIMER_RESET) {
         BeginStartEdit();
     } else if (command == IDM_TIMER_PORTAL) {
@@ -4511,15 +4533,45 @@ static void EndStartEdit(void)
     UpdateTimer();
 }
 
-static void BeginStartEdit(void)
+static void PrefillStartEdit(HWND edit)
 {
     FILETIME utc,local;ULARGE_INTEGER value;value.QuadPart=g_workday_started?g_workday_started:CurrentFileTime();
     utc.dwLowDateTime=value.LowPart;utc.dwHighDateTime=value.HighPart;
     SYSTEMTIME time;FileTimeToLocalFileTime(&utc,&local);FileTimeToSystemTime(&local,&time);
     wchar_t text[16];swprintf(text,16,L"%02u:%02u",time.wHour,time.wMinute);
-    SetWindowTextW(g_start_edit,text);g_editing_start=TRUE;
+    SetWindowTextW(edit,text);
+}
+
+static void BeginStartEdit(void)
+{
+    PrefillStartEdit(g_start_edit);g_editing_start=TRUE;
     ShowWindow(g_timer,SW_HIDE);ShowWindow(g_start_edit,SW_SHOWNA);
     SetFocus(g_start_edit);SendMessageW(g_start_edit,EM_SETSEL,0,-1);
+}
+
+static BOOL SaveWorkdayStartFromEdit(HWND edit)
+{
+    if(g_update_handoff)return FALSE;
+    wchar_t text[16];int hour,minute;
+    GetWindowTextW(edit,text,_countof(text));
+    SYSTEMTIME local,utc;FILETIME file;ULARGE_INTEGER value;
+    GetLocalTime(&local);
+    if(ParseStartTime(text,&hour,&minute)){
+        local.wHour=(WORD)hour;local.wMinute=(WORD)minute;local.wSecond=local.wMilliseconds=0;
+        if(TzSpecificLocalTimeToSystemTime(NULL,&local,&utc)&&SystemTimeToFileTime(&utc,&file)){
+            value.LowPart=file.dwLowDateTime;value.HighPart=file.dwHighDateTime;
+            if(value.QuadPart<=CurrentFileTime()){
+                wchar_t started[32];
+                swprintf(started,_countof(started),L"%llu",value.QuadPart);
+                if(WritePrivateProfileStringW(L"Timer",L"Started",started,g_settings_path)){
+                    g_workday_started=value.QuadPart;
+                    return TRUE;
+                }
+            }
+        }
+    }
+    MessageBeep(MB_ICONWARNING);SendMessageW(edit,EM_SETSEL,0,-1);
+    return FALSE;
 }
 
 static LRESULT CALLBACK StartEditProcedure(HWND window,UINT message,WPARAM wp,LPARAM lp,UINT_PTR id,DWORD_PTR data)
@@ -4529,17 +4581,8 @@ static LRESULT CALLBACK StartEditProcedure(HWND window,UINT message,WPARAM wp,LP
     if(message==WM_KILLFOCUS && g_editing_start)EndStartEdit();
     if(message==WM_KEYDOWN && wp==VK_ESCAPE){EndStartEdit();SetFocus(g_timer);return 0;}
     if(message==WM_KEYDOWN && wp==VK_RETURN){
-        wchar_t text[16];int h,m;GetWindowTextW(window,text,16);
-        SYSTEMTIME local,utc;FILETIME file;ULARGE_INTEGER value;
-        GetLocalTime(&local);
-        BOOL valid=ParseStartTime(text,&h,&m);
-        if(valid){
-            local.wHour=(WORD)h;local.wMinute=(WORD)m;local.wSecond=local.wMilliseconds=0;
-            valid=TzSpecificLocalTimeToSystemTime(NULL,&local,&utc)&&SystemTimeToFileTime(&utc,&file);
-            if(valid){value.LowPart=file.dwLowDateTime;value.HighPart=file.dwHighDateTime;valid=value.QuadPart<=CurrentFileTime();}
-        }
-        if(!valid){MessageBeep(MB_ICONWARNING);SendMessageW(window,EM_SETSEL,0,-1);return 0;}
-        g_workday_started=value.QuadPart;SaveSettings();EndStartEdit();SetFocus(g_timer);return 0;
+        if(SaveWorkdayStartFromEdit(window)){EndStartEdit();SetFocus(g_timer);}
+        return 0;
     }
     return DefSubclassProc(window,message,wp,lp);
 }
@@ -4754,6 +4797,7 @@ static void UpdateTooltips(void)
 }
 
 #include "native_update_ui.h"
+#include "native_desktop_widget.h"
 #include "native_settings.h"
 
 #include "native_bookmark_ui.h"
@@ -4788,7 +4832,11 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
         if(w_param==WTS_SESSION_LOGON||w_param==WTS_SESSION_UNLOCK)StartWorkdayForInteractiveSession();
         return 0;
 
-    case WM_SIZE:
+    case WM_SIZE:{
+        BOOL minimized=w_param==SIZE_MINIMIZED;
+        BOOL just_minimized=minimized&&g_desktop_widget_main_shown&&IsWindowVisible(window);
+        g_desktop_widget_main_shown=!minimized&&!IsIconic(window)&&IsWindowVisible(window);
+        if(g_desktop_widget_main_shown)HideDesktopWidget();
         if(g_popover.window)SendMessageW(g_popover.window,WM_CLOSE,0,0);
         if(g_list)SendMessageW(g_list,WM_SETREDRAW,FALSE,0);
         LayoutControls(LOWORD(l_param), HIWORD(l_param));
@@ -4796,10 +4844,16 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
         RedrawWindow(window,NULL,NULL,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);
         UpdateCommentAttention(GetTickCount64());
         RepositionAnchoredTaskPopovers();
+        if(just_minimized)ShowDesktopWidget();
         return 0;
+    }
 
     case WM_SHOWWINDOW:
-        if(w_param){PostMessageW(window,WM_INITIAL_LOAD,0,0);LayoutInitialView();}
+        g_desktop_widget_main_shown=w_param&&!IsIconic(window);
+        if(w_param){
+            if(g_desktop_widget_main_shown)HideDesktopWidget();
+            PostMessageW(window,WM_INITIAL_LOAD,0,0);LayoutInitialView();
+        }
         if(!w_param){
             KillTimer(g_list,9);
             RowLiftClear(FALSE);
@@ -4987,15 +5041,9 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
         DrawOwnerButton((const DRAWITEMSTRUCT *)l_param);
         return TRUE;
 
-    case WM_MEASUREITEM: {
-        MEASUREITEMSTRUCT *measure=(MEASUREITEMSTRUCT*)l_param;
-        if(measure->CtlType!=ODT_MENU)break;
-        PopupItem *item=(PopupItem*)measure->itemData;if(!item)break;
-        HDC dc=GetDC(window);HGDIOBJ font=SelectObject(dc,g_font);SIZE size;
-        GetTextExtentPoint32W(dc,item->text,(int)wcslen(item->text),&size);
-        SelectObject(dc,font);ReleaseDC(window,dc);
-        measure->itemWidth=size.cx+D(item->plain?12:32);measure->itemHeight=D(item->separator?9:28);return TRUE;
-    }
+    case WM_MEASUREITEM:
+        if(MeasureNativeMenuItem(window,(MEASUREITEMSTRUCT*)l_param))return TRUE;
+        break;
 
     case WM_CTLCOLOREDIT: {
         HDC dc = (HDC)w_param;
@@ -5021,6 +5069,7 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
 
     case WM_TRAYICON:
         if (l_param == WM_LBUTTONUP || l_param == WM_LBUTTONDBLCLK || l_param == NIN_BALLOONUSERCLICK) {
+            HideDesktopWidget();
             ShowWindow(window, SW_RESTORE);
             SetForegroundWindow(window);
             if(l_param==NIN_BALLOONUSERCLICK&&g_update_notice){g_update_notice=FALSE;OpenSettingsWindow();if(s_window)SettingsTab(1);}
@@ -5054,13 +5103,16 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
             }
         }
         if (!g_allow_close) {
+            BOOL was_visible=IsWindowVisible(window);
             NativeLifecycleEvent(&g_lifecycle,L"window_hidden",L"reason=close_button; application_remains_in_tray");
             ShowWindow(window, SW_HIDE);
+            if(was_visible)ShowDesktopWidget();
             return 0;
         }
         break;
 
     case WM_DESTROY:
+        if(g_desktop_widget)DestroyWindow(g_desktop_widget);
         CloseStatusMark();
         if(g_status_marks.ready&&g_status_marks.dirty)StatusMarksSave(&g_status_marks,g_settings_path);
         NativeStatusMarksFree(&g_status_marks);

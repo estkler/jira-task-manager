@@ -27,6 +27,8 @@ static void fixture_report(const UpdateApplyFailure *failure){
 int WINAPI wWinMain(HINSTANCE instance,HINSTANCE previous,PWSTR command,int show){
     (void)instance;(void)previous;(void)command;(void)show;int argc;wchar_t **argv=CommandLineToArgvW(GetCommandLineW(),&argc);int result=0;
     if(argc>1&&!wcscmp(argv[1],L"--apply-update")){
+        wchar_t report_start[8];
+        if(GetEnvironmentVariableW(L"JTM_FIXTURE_REPORT_START",report_start,8))marker(L"helper-started");
         wchar_t flag[8];UpdateApplyOps ops={GetEnvironmentVariableW(L"JTM_FIXTURE_FAIL_RENAME",flag,8)?fixture_move:NULL,GetEnvironmentVariableW(L"JTM_FIXTURE_FAIL_START",flag,8)?fixture_start_failed:NULL,GetEnvironmentVariableW(L"JTM_FIXTURE_SHORT_WAIT",flag,8)?125:60000,GetEnvironmentVariableW(L"JTM_FIXTURE_FIXED_NONCE",flag,8)?fixture_nonce:NULL,GetEnvironmentVariableW(L"JTM_FIXTURE_FAIL_COPY",flag,8)?fixture_copy_failed:NULL,fixture_report};
         result=UpdateRunHelperUsing(argc,argv,&ops);
     }else if(argc==4&&!wcscmp(argv[1],L"--fixture-parent")){

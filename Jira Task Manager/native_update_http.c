@@ -124,15 +124,26 @@ UpdateStatus UpdateCheckWithNotesUsing(UpdateVersion current,UpdateCancel *cance
 UpdateStatus UpdateCheckUsing(UpdateVersion current,UpdateCancel *cancel,UpdateRelease *out,const UpdateTransport *transport,void *context){return UpdateCheckWithNotesUsing(current,cancel,out,NULL,0,transport,context);}
 UpdateStatus UpdateCheck(UpdateVersion current,UpdateCancel *cancel,UpdateRelease *out){return UpdateCheckUsing(current,cancel,out,&windows_transport,NULL);}
 UpdateStatus UpdateCheckWithNotes(UpdateVersion current,UpdateCancel *cancel,UpdateRelease *out,wchar_t *notes,size_t capacity){return UpdateCheckWithNotesUsing(current,cancel,out,notes,capacity,&windows_transport,NULL);}
-typedef struct FileSink {HANDLE file;DWORD length,total;UpdateProgress progress;void *progress_context;} FileSink;
-static BOOL file_sink(const BYTE *bytes,DWORD length,void *context){FileSink *f=context;DWORD written;BOOL ok=WriteFile(f->file,bytes,length,&written,NULL)&&written==length;if(ok){f->length+=length;if(f->progress)f->progress(f->length,f->total,f->progress_context);}return ok;}
+typedef struct FileSink {HANDLE file;DWORD length,total,error;UpdateProgress progress;void *progress_context;} FileSink;
+static BOOL file_sink(const BYTE *bytes,DWORD length,void *context){
+    FileSink *f=context;DWORD written;
+    if(!WriteFile(f->file,bytes,length,&written,NULL)){f->error=GetLastError();return FALSE;}
+    if(written!=length){f->error=ERROR_WRITE_FAULT;return FALSE;}
+    f->length+=length;if(f->progress)f->progress(f->length,f->total,f->progress_context);
+    return TRUE;
+}
 UpdateStatus UpdateDownloadWithProgressUsing(const UpdateRelease *release,HANDLE destination,UpdateCancel *cancel,UpdateProgress progress,void *progress_context,const UpdateTransport *transport,void *context){
     if(!release||!release->asset_id||!release->size||release->size>UPDATE_EXE_LIMIT||destination==INVALID_HANDLE_VALUE)return UPDATE_INVALID;
     LARGE_INTEGER zero={0};if(!SetFilePointerEx(destination,zero,NULL,FILE_BEGIN)||!SetEndOfFile(destination))return UPDATE_IO;
     wchar_t url[256];swprintf(url,_countof(url),L"https://api.github.com/repos/estkler/jira-task-manager/releases/assets/%llu",release->asset_id);DWORD code;FileSink f={.file=destination,.total=release->size,.progress=progress,.progress_context=progress_context};
     if(progress)progress(0,release->size,progress_context);
     UpdateStatus result=UpdateHttpGetUsing(url,L"application/octet-stream",release->size,cancel,file_sink,&f,&code,transport,context);
-    if(result==UPDATE_OK)result=code!=200?UPDATE_NETWORK:f.length!=release->size?UPDATE_INVALID:FlushFileBuffers(destination)?UPDATE_OK:UPDATE_IO;
+    if(result==UPDATE_OK){
+        if(code!=200)result=UPDATE_NETWORK;
+        else if(f.length!=release->size)result=UPDATE_INVALID;
+        else if(!FlushFileBuffers(destination)){f.error=GetLastError();result=UPDATE_IO;}
+    }
+    SetLastError(f.error);
     return result;
 }
 UpdateStatus UpdateDownloadUsing(const UpdateRelease *release,HANDLE destination,UpdateCancel *cancel,const UpdateTransport *transport,void *context){return UpdateDownloadWithProgressUsing(release,destination,cancel,NULL,NULL,transport,context);}

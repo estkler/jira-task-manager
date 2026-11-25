@@ -15,11 +15,11 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'OS-native SVG compilation failed.' }
     & $compiler rc /nologo /fo 'bin/update_test_fixture.res' 'update_test_fixture.rc'
     if ($LASTEXITCODE -ne 0) { throw 'Update fixture resource compilation failed.' }
-    & $compiler cc -municode 'update_test_fixture.c' 'native_update_model.c' 'native_update_files.c' 'native_update_apply.c' 'bin/update_test_fixture.res' -o 'bin/update_test_fixture.exe' '-Wl,--subsystem,windows' -lwinhttp -lshlwapi -lshell32 -ladvapi32 -lbcrypt
+    & $compiler cc -municode 'update_test_fixture.c' 'native_update_model.c' 'native_update_files.c' 'native_update_apply.c' 'native_identity.c' 'bin/update_test_fixture.res' -o 'bin/update_test_fixture.exe' '-Wl,--subsystem,windows' -lwinhttp -lshlwapi -lshell32 -ladvapi32 -lbcrypt -lole32 -luuid
     if ($LASTEXITCODE -ne 0) { throw 'Update fixture compilation failed.' }
     & $compiler rc /nologo /DFIXTURE_PATCH=29 /fo 'bin/update_test_old.res' 'update_test_fixture.rc'
     if ($LASTEXITCODE -ne 0) { throw 'Old fixture resource compilation failed.' }
-    & $compiler cc -municode 'update_test_fixture.c' 'native_update_model.c' 'native_update_files.c' 'native_update_apply.c' 'bin/update_test_old.res' -o 'bin/update_test_old.exe' '-Wl,--subsystem,windows' -lwinhttp -lshlwapi -lshell32 -ladvapi32 -lbcrypt
+    & $compiler cc -municode 'update_test_fixture.c' 'native_update_model.c' 'native_update_files.c' 'native_update_apply.c' 'native_identity.c' 'bin/update_test_old.res' -o 'bin/update_test_old.exe' '-Wl,--subsystem,windows' -lwinhttp -lshlwapi -lshell32 -ladvapi32 -lbcrypt -lole32 -luuid
     if ($LASTEXITCODE -ne 0) { throw 'Old fixture compilation failed.' }
     & $compiler rc /nologo /fo 'bin/activity_header_test.res' 'app.rc'
     if ($LASTEXITCODE -ne 0) { throw 'Activity header fixture resource compilation failed.' }
@@ -32,7 +32,7 @@ try {
         if ($testName -eq 'update_model_test') { $sources += 'native_update_model.c' }
         elseif ($testName -eq 'update_http_test') { $sources += 'native_update_model.c' }
         elseif ($testName -eq 'update_files_test') { $sources += 'native_update_model.c','native_update_files.c' }
-        elseif ($testName -eq 'update_apply_test') { $sources += 'native_update_model.c','native_update_files.c','native_update_apply.c' }
+        elseif ($testName -eq 'update_apply_test') { $sources += 'native_update_model.c','native_update_files.c','native_update_apply.c','native_identity.c' }
         elseif ($testName -eq 'identity_migration_test') { $sources += 'native_identity.c' }
         elseif ($testName -eq 'lifecycle_log_test') { $sources += 'native_lifecycle.c','native_identity.c' }
         elseif ($testName -eq 'jira_snapshot_cache_test') { $sources += 'native_jira.c','native_images.c','native_avatar_cache.c','bin/native_svg.o','native_identity.c' }

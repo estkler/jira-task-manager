@@ -9,6 +9,8 @@ typedef struct UpdateWork {
     UpdateStatus status;UpdateVersion current;UpdateRelease release;UpdateStage stage;
     wchar_t notes[UPDATE_NOTES_CAP];volatile LONG received,verifying;
     HWND owner;HANDLE thread,ready,helper;
+    const wchar_t *step;
+    DWORD windows_error,helper_exit;
 } UpdateWork;
 static UpdateUiState u_state;
 static UINT u_generation;
@@ -37,6 +39,25 @@ static BOOL UpdateSettingsAccountBusy(void);
 static void UpdateUiRender(HWND settings);
 static void LayoutSettings(void);
 static BOOL UpdateInstallAllowed(wchar_t *reason,size_t capacity);
+static void LogUpdateFailure(const wchar_t *step,UpdateStatus status,DWORD windows_error,DWORD helper_exit,
+    UpdateVersion version)
+{
+    wchar_t details[240];
+    swprintf(details,_countof(details),L"step=%ls | status=%u | win32=%lu | helper_exit=%lu | target_version=%lu.%lu.%lu",
+        step,(unsigned)status,windows_error,helper_exit,version.major,version.minor,version.patch);
+    NativeLifecycleEvent(&g_lifecycle,L"update_failed",details);
+}
+static BOOL UpdateCanRetryInstall(void){
+    return u_state==UPDATE_UI_ERROR&&u_failed_action==2&&u_stage.executable[0];
+}
+static void UpdateInstallPreparationError(HWND settings,const wchar_t *step,UpdateStatus status,DWORD windows_error){
+    LogUpdateFailure(step,status,windows_error,0,u_release.version);
+    u_failed_action=2;u_state=UPDATE_UI_ERROR;u_error=status;
+    wcscpy_s(u_reason,_countof(u_reason),g_russian?
+        L"Не удалось подготовить установку. Подробности в «Диагностике».":
+        L"Could not prepare installation. See Diagnostics for details.");
+    UpdateUiRender(settings);
+}
 static BOOL UpdatePopoverDirty(TaskPopover *p){return p&&p->window&&(p->sending||p->note_save_failed||(p->kind==1&&p->input&&GetWindowTextLengthW(p->input)>0));}
 static BOOL UpdateInstallAllowed(wchar_t *reason,size_t capacity){
     const wchar_t *message=NULL;
@@ -72,7 +93,9 @@ static void UpdateUiCancel(void){
     if(!u_shutdown&&!u_handoff&&u_work&&u_work->background){u_settings=NULL;return;}
     if(!u_shutdown&&!u_handoff&&!u_work){
         ++u_generation; /* Detach invalidates queued manual results, not cached discovery. */
-        if(u_state==UPDATE_UI_READY){UpdateStageCleanup(&u_stage);u_state=u_release.asset_id?UPDATE_UI_AVAILABLE:UPDATE_UI_IDLE;}
+        if(u_state==UPDATE_UI_READY||UpdateCanRetryInstall()){
+            UpdateStageCleanup(&u_stage);u_state=u_release.asset_id?UPDATE_UI_AVAILABLE:UPDATE_UI_IDLE;
+        }
         u_settings=NULL;u_reason[0]=0;return;
     }
     if(u_work&&u_work->action==0)u_auto_due=GetTickCount64()+3600000ULL;
@@ -82,26 +105,50 @@ static void UpdateUiCancel(void){
     u_settings=NULL;
 }
 static void UpdateUiAttach(HWND settings){u_settings=settings;UpdateUiRender(settings);}
-static void UpdateUiAbortHandoff(void){
+static void UpdateUiAbortHandoff(const wchar_t *step,DWORD helper_exit){
     if(!u_handoff)return;UpdateStopHelper(u_helper);if(u_helper)CloseHandle(u_helper);u_helper=NULL;
     u_handoff=FALSE;g_allow_close=FALSE;g_shutdown_reason=L"normal";UpdateFreeze(FALSE);
     if(g_lifecycle.started&&g_lifecycle.update_path[0])DeleteFileW(g_lifecycle.update_path);
-    UpdateStageCleanup(&u_stage);u_state=UPDATE_UI_ERROR;u_error=UPDATE_BUSY;UpdateUiRender(u_settings);
+    LogUpdateFailure(step,UPDATE_BUSY,0,helper_exit,u_release.version);
+    u_failed_action=2;u_state=UPDATE_UI_ERROR;u_error=UPDATE_BUSY;UpdateUiRender(u_settings);
 }
 static void UpdateUiProgress(DWORD received,DWORD total,void *context){(void)total;UpdateWork *work=context;InterlockedExchange(&work->received,(LONG)received);}
 static DWORD WINAPI UpdateUiWorker(void *arg){
     UpdateWork *work=arg;
-    if(work->action==0)work->status=UpdateCheckWithNotes(work->current,&work->cancel,&work->release,work->notes,UPDATE_NOTES_CAP);
+    if(work->action==0){
+        work->step=L"check_release";
+        work->status=UpdateCheckWithNotes(work->current,&work->cancel,&work->release,work->notes,UPDATE_NOTES_CAP);
+    }
     else if(work->action==1){
+        work->step=L"create_staging_directory";
         work->status=UpdateStageCreate(&work->stage);
+        if(work->status!=UPDATE_OK)work->windows_error=GetLastError();
         if(work->status==UPDATE_OK){
+            work->step=L"create_staged_exe";
             HANDLE file=CreateFileW(work->stage.executable,GENERIC_READ|GENERIC_WRITE,FILE_SHARE_READ,NULL,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,NULL);
-            if(file==INVALID_HANDLE_VALUE)work->status=UPDATE_IO;
-            else{work->status=UpdateDownloadWithProgress(&work->release,file,&work->cancel,UpdateUiProgress,work);if(work->status==UPDATE_OK){InterlockedExchange(&work->verifying,1);work->status=UpdateVerifyFile(file,&work->release);}CloseHandle(file);}
+            if(file==INVALID_HANDLE_VALUE){work->windows_error=GetLastError();work->status=UPDATE_IO;}
+            else{
+                work->step=L"download_exe";
+                work->status=UpdateDownloadWithProgress(&work->release,file,&work->cancel,UpdateUiProgress,work);
+                if(work->status==UPDATE_IO)work->windows_error=GetLastError();
+                if(work->status==UPDATE_OK){
+                    work->step=L"verify_download";
+                    InterlockedExchange(&work->verifying,1);work->status=UpdateVerifyFile(file,&work->release);
+                }
+                CloseHandle(file);
+            }
         }
     }else{
-        HANDLE handles[]={work->ready,work->helper};DWORD wait=WaitForMultipleObjects(2,handles,FALSE,5000);
-        work->status=wait==WAIT_OBJECT_0&&WaitForSingleObject(work->helper,0)==WAIT_TIMEOUT?UPDATE_OK:UPDATE_IO;
+        work->step=L"wait_for_installer";
+        HANDLE handles[]={work->ready,work->helper};DWORD wait=WaitForMultipleObjects(2,handles,FALSE,15000);
+        work->status=UPDATE_IO;
+        if(wait==WAIT_TIMEOUT)work->windows_error=ERROR_TIMEOUT;
+        else if(wait==WAIT_FAILED)work->windows_error=GetLastError();
+        else if(wait==WAIT_OBJECT_0&&WaitForSingleObject(work->helper,0)==WAIT_TIMEOUT)work->status=UPDATE_OK;
+        else if(GetExitCodeProcess(work->helper,&work->helper_exit)){
+            work->step=L"installer_exited_before_handoff";
+            if(work->helper_exit==UPDATE_INVALID||work->helper_exit==UPDATE_BUSY)work->status=(UpdateStatus)work->helper_exit;
+        }else work->windows_error=GetLastError();
     }
     if(work->cancel.cancelled)work->status=UPDATE_CANCELLED;
     EnterCriticalSection(&u_post_lock);
@@ -113,7 +160,18 @@ static BOOL UpdateUiStart(UpdateWork *work,HWND settings){
     if(!u_lock_initialized){InitializeCriticalSection(&u_post_lock);u_lock_initialized=TRUE;}
     work->references=2;work->generation=++u_generation;work->owner=g_window;u_settings=settings;u_work=work;
     work->thread=CreateThread(NULL,0,UpdateUiWorker,work,0,NULL);
-    if(!work->thread){UpdateStopHelper(work->helper);UpdateWorkRelease(work);UpdateWorkRelease(work);u_work=NULL;u_state=UPDATE_UI_ERROR;u_error=UPDATE_IO;UpdateUiRender(settings);return FALSE;}
+    if(!work->thread){
+        DWORD error=GetLastError();int action=work->action;UpdateVersion version=work->release.version;
+        UpdateStopHelper(work->helper);
+        if(action==2){u_stage=work->stage;memset(&work->stage,0,sizeof(work->stage));}
+        UpdateWorkRelease(work);UpdateWorkRelease(work);u_work=NULL;
+        if(action==2)UpdateInstallPreparationError(settings,L"start_update_worker",UPDATE_IO,error);
+        else{
+            LogUpdateFailure(L"start_update_worker",UPDATE_IO,error,0,version);
+            u_failed_action=action;u_state=UPDATE_UI_ERROR;u_error=UPDATE_IO;UpdateUiRender(settings);
+        }
+        return FALSE;
+    }
     UpdateUiRender(settings);return TRUE;
 }
 static void UpdateUiBeginCheckMode(HWND settings,BOOL background){
@@ -128,7 +186,7 @@ static void UpdateUiBeginCheck(HWND settings){UpdateUiBeginCheckMode(settings,FA
 static void UpdateUiAutoInit(void){u_auto_due=GetTickCount64()+30000;u_notified_memory[0]=0;}
 static void UpdateUiAutoTick(void){
     if(u_shutdown||u_handoff||!u_auto_due||GetTickCount64()<u_auto_due||u_work||g_jira_busy||g_refresh_presence.locked||g_refresh_presence.suspended||
-       u_state==UPDATE_UI_READY||u_state==UPDATE_UI_DOWNLOADING||u_state==UPDATE_UI_APPLYING||UpdateSettingsAccountBusy())return;
+        u_state==UPDATE_UI_READY||u_state==UPDATE_UI_DOWNLOADING||u_state==UPDATE_UI_APPLYING||UpdateCanRetryInstall()||UpdateSettingsAccountBusy())return;
     UpdateUiBeginCheckMode(u_settings,TRUE);
 }
 static void UpdateUiNotifyAvailable(void){
@@ -152,18 +210,38 @@ static void UpdateUiBeginInstall(HWND settings){
     if(MessageBoxW(u_details?u_details:settings,text,APP_TITLE,MB_YESNO|MB_ICONQUESTION)!=IDYES)return;
     if(!UpdateInstallAllowed(u_reason,_countof(u_reason))){UpdateUiRender(settings);return;}
     UpdateApplyRequest request={0};request.parent_pid=GetCurrentProcessId();request.release=u_release;FILETIME c,e,k,t;
-    if(!GetProcessTimes(GetCurrentProcess(),&c,&e,&k,&t)){u_state=UPDATE_UI_ERROR;u_error=UPDATE_IO;UpdateUiRender(settings);return;}
+    if(!GetProcessTimes(GetCurrentProcess(),&c,&e,&k,&t)){
+        UpdateInstallPreparationError(settings,L"read_running_app",UPDATE_IO,GetLastError());return;
+    }
     request.parent_created=((ULONGLONG)c.dwHighDateTime<<32)|c.dwLowDateTime;
     wchar_t module[MAX_PATH],canonical[MAX_PATH+8];DWORD length=GetModuleFileNameW(NULL,module,MAX_PATH);
     HANDLE f=length&&length<MAX_PATH?CreateFileW(module,FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,OPEN_EXISTING,0,NULL):INVALID_HANDLE_VALUE;
-    DWORD n=f!=INVALID_HANDLE_VALUE?GetFinalPathNameByHandleW(f,canonical,_countof(canonical),FILE_NAME_NORMALIZED|VOLUME_NAME_DOS):0;if(f!=INVALID_HANDLE_VALUE)CloseHandle(f);
-    if(!n||n>=_countof(canonical)||wcsncmp(canonical,L"\\\\?\\",4)||wcslen(canonical+4)>=MAX_PATH){u_state=UPDATE_UI_ERROR;u_error=UPDATE_INVALID;UpdateUiRender(settings);return;}
+    DWORD n=f!=INVALID_HANDLE_VALUE?GetFinalPathNameByHandleW(f,canonical,_countof(canonical),FILE_NAME_NORMALIZED|VOLUME_NAME_DOS):0;
+    DWORD error=n?ERROR_INVALID_DATA:GetLastError();
+    if(f!=INVALID_HANDLE_VALUE)CloseHandle(f);
+    if(!n||n>=_countof(canonical)||wcsncmp(canonical,L"\\\\?\\",4)||wcslen(canonical+4)>=MAX_PATH){
+        UpdateInstallPreparationError(settings,L"resolve_installed_exe",UPDATE_INVALID,error);return;
+    }
     wcscpy_s(request.target,MAX_PATH,canonical+4);
     UpdateWork *work=calloc(1,sizeof(*work));if(!work)return;work->action=2;work->release=u_release;
     UpdateStatus status=UpdateLaunchHelperTracked(&u_stage,&request,&work->ready,&work->helper);
-    if(status!=UPDATE_OK){free(work);u_state=UPDATE_UI_ERROR;u_error=status;UpdateUiRender(settings);return;}
+    if(status!=UPDATE_OK){
+        error=GetLastError();free(work);
+        if(status==UPDATE_INVALID)UpdateStageCleanup(&u_stage);
+        UpdateInstallPreparationError(settings,L"launch_installer",status,error);
+        if(status==UPDATE_INVALID)u_failed_action=1;
+        return;
+    }
     work->stage=u_stage;memset(&u_stage,0,sizeof(u_stage));u_state=UPDATE_UI_APPLYING;u_reason[0]=0;
     UpdateUiStart(work,settings);
+}
+static void UpdateUiRetry(HWND settings){
+    if(u_work)return;
+    if(UpdateCanRetryInstall()){
+        u_state=UPDATE_UI_READY;u_reason[0]=0;UpdateUiRender(settings);UpdateUiBeginInstall(settings);
+    }else if(u_failed_action==1&&u_release.asset_id){
+        u_state=UPDATE_UI_AVAILABLE;UpdateUiBeginDownload(settings);
+    }else UpdateUiBeginCheck(settings);
 }
 static BOOL UpdateUiHandleMessage(UINT message,WPARAM wp,LPARAM lp){
     (void)wp;if(message!=WM_UPDATE_RESULT&&message!=WM_UPDATE_READY)return FALSE;UpdateWork *work=(UpdateWork*)lp;if(!work)return TRUE;
@@ -174,6 +252,18 @@ static BOOL UpdateUiHandleMessage(UINT message,WPARAM wp,LPARAM lp){
         if(work->status!=UPDATE_OK&&work->status!=UPDATE_NONE){
             u_failed_action=work->action;
             u_auto_due=GetTickCount64()+3600000ULL;u_state=work->background?work->previous_state:UPDATE_UI_ERROR;UpdateStopHelper(work->helper);
+            if(work->status!=UPDATE_CANCELLED)LogUpdateFailure(work->step?work->step:L"update_worker",
+                work->status,work->windows_error,work->helper_exit,work->release.version);
+            if(work->action==1&&work->status!=UPDATE_CANCELLED){
+                wcscpy_s(u_reason,_countof(u_reason),work->status==UPDATE_INVALID?
+                    (g_russian?L"Файл не прошёл проверку. Подробности в «Диагностике».":L"The file did not pass verification. See Diagnostics."):
+                    (g_russian?L"Не удалось скачать обновление. Подробности в «Диагностике».":L"Could not download the update. See Diagnostics."));
+            }else if(work->action==2){
+                u_stage=work->stage;memset(&work->stage,0,sizeof(work->stage));
+                wcscpy_s(u_reason,_countof(u_reason),work->windows_error==ERROR_TIMEOUT?
+                    (g_russian?L"Установщик не ответил. Подробности в «Диагностике».":L"The installer timed out. See Diagnostics."):
+                    (g_russian?L"Установщик отклонил обновление. Подробности в «Диагностике».":L"The installer rejected the update. See Diagnostics."));
+            }
         }
         else if(work->action==0){u_release=work->release;wcscpy_s(u_notes,UPDATE_NOTES_CAP,work->notes);u_no_release=work->status==UPDATE_NONE&&!work->release.asset_id;
             u_local_newer=work->status==UPDATE_NONE&&work->release.asset_id&&UpdateCompareVersion(work->current,work->release.version)>0;
@@ -181,14 +271,26 @@ static BOOL UpdateUiHandleMessage(UINT message,WPARAM wp,LPARAM lp){
             if(work->background&&u_state==UPDATE_UI_AVAILABLE)UpdateUiNotifyAvailable();
         }
         else if(work->action==1){UpdateStageCleanup(&u_stage);u_stage=work->stage;memset(&work->stage,0,sizeof(work->stage));u_state=UPDATE_UI_READY;}
-        else if(!UpdateInstallAllowed(u_reason,_countof(u_reason))){UpdateStopHelper(work->helper);u_state=UPDATE_UI_ERROR;u_error=UPDATE_BUSY;}
+        else if(!UpdateInstallAllowed(u_reason,_countof(u_reason))){
+            UpdateStopHelper(work->helper);
+            u_stage=work->stage;memset(&work->stage,0,sizeof(work->stage));
+            u_failed_action=2;u_state=UPDATE_UI_ERROR;u_error=UPDATE_BUSY;
+        }
         else{
             u_helper=work->helper;work->helper=NULL;u_stage=work->stage;memset(&work->stage,0,sizeof(work->stage));u_handoff=TRUE;g_allow_close=TRUE;g_shutdown_reason=L"update";UpdateFreeze(TRUE);
-            if(!SaveSettings()){wcscpy_s(u_reason,256,g_russian?L"Не удалось сохранить состояние. Обновление отменено.":L"Could not save state. Update cancelled.");UpdateUiAbortHandoff();}
+            if(!SaveSettings()){
+                wcscpy_s(u_reason,256,g_russian?L"Не удалось сохранить состояние. Обновление отменено.":L"Could not save state. Update cancelled.");
+                UpdateUiAbortHandoff(L"save_before_update",0);
+            }
+            else if(WaitForSingleObject(u_helper,0)!=WAIT_TIMEOUT){
+                DWORD exit_code=0;GetExitCodeProcess(u_helper,&exit_code);
+                wcscpy_s(u_reason,256,g_russian?L"Установщик завершился до перезапуска. См. «Диагностику».":L"The installer exited before restart. See Diagnostics.");
+                UpdateUiAbortHandoff(L"installer_exited_before_close",exit_code);
+            }
             else{
                 if(g_lifecycle.started&&g_lifecycle.update_path[0]){HANDLE marker=CreateFileW(g_lifecycle.update_path,GENERIC_WRITE,FILE_SHARE_READ,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_HIDDEN,NULL);if(marker!=INVALID_HANDLE_VALUE){FlushFileBuffers(marker);CloseHandle(marker);}}
                 NativeLifecycleEvent(&g_lifecycle,L"update_handoff",L"reason=verified_helper_ready");SendMessageW(g_window,WM_CLOSE,0,0);
-                if(IsWindow(g_window))UpdateUiAbortHandoff();
+                if(IsWindow(g_window))UpdateUiAbortHandoff(L"app_did_not_close",0);
             }
         }
         if(!u_shutdown)UpdateUiRender(u_settings);

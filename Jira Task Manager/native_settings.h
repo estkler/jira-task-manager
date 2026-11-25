@@ -3,6 +3,7 @@
 #define WM_ACCOUNT_CHECKED (WM_APP+40)
 #define WM_ADVANCED_REPOSITION (WM_APP+43)
 #define SETTINGS_WIDTH_DIP 430
+#define IDC_SETTINGS_DESKTOP_WIDGET 275
 #define SETTINGS_HEIGHT_DIP 417 /* Client height, excluding the native caption/frame. */
 typedef struct AccountCheck {
     HWND window; wchar_t url[768],token[1201],account[256],error[256]; BOOL ok,replace;
@@ -36,7 +37,7 @@ static BOOL s_advanced_reposition_pending;
 static HWND SettingsItem(int id){return GetDlgItem((id>=258&&id<=260)||id==262?s_advanced_window:id>=250&&id<=261&&id!=257?s_notifications:s_window,id);}
 static void UpdateSettingsCheckboxThemes(void)
 {
-    const int ids[]={214,224,225,246,250,251,261,270};
+    const int ids[]={214,224,225,246,250,251,261,270,IDC_SETTINGS_DESKTOP_WIDGET};
     for(int i=0;i<_countof(ids);i++)SetWindowTheme(SettingsItem(ids[i]),g_dark?L"DarkMode_Explorer":L"Explorer",NULL);
 }
 static void LayoutNotificationPage(void);
@@ -92,6 +93,7 @@ static BOOL UpdateSettingsDirty(void){
     GetWindowTextW(s_url,url,768);
     wchar_t exclusions[NATIVE_EXCLUDED_EMAILS_CAPACITY],avatar_days[16];GetWindowTextW(SettingsItem(252),exclusions,_countof(exclusions));GetWindowTextW(SettingsItem(259),avatar_days,_countof(avatar_days));
     return (SendMessageW(SettingsItem(270),BM_GETCHECK,0,0)==BST_CHECKED)!=g_pause_when_locked||
+        (SendMessageW(SettingsItem(IDC_SETTINGS_DESKTOP_WIDGET),BM_GETCHECK,0,0)==BST_CHECKED)!=g_desktop_widget_enabled||
         JiraParseInterval(avatar_days)!=(int)s_original_avatar_days||wcscmp(exclusions,g_notifications.excluded)||
         (SendMessageW(SettingsItem(250),BM_GETCHECK,0,0)==BST_CHECKED)!=s_original_task_alerts||
         (SendMessageW(SettingsItem(251),BM_GETCHECK,0,0)==BST_CHECKED)!=s_original_comment_alerts||
@@ -407,15 +409,16 @@ static void LayoutSettings(void)
     PlaceSettings(269,26,preferences+72,field_width,MulDiv(hint.bottom,96,g_dpi)+2);
     PlaceSettings(270,26,preferences+84+MulDiv(hint.bottom,96,g_dpi),field_width,26);
     PlaceSettings(247,26,60,field_width,16);PlaceSettings(214,26,80,field_width,22);
-    PlaceSettings(248,26,120,field_width,16);PlaceSettings(224,26,140,field_width,22);
-    PlaceSettings(225,26,164,field_width,22);PlaceSettings(246,26,188,field_width,22);
-    PlaceSettings(222,26,232,field_width-65,20);PlaceSettings(263,width-86,232,60,20);
-    PlaceSettings(213,26,256,field_width,24);SendMessageW(GetDlgItem(s_window,213),TBM_GETCHANNELRECT,0,(LPARAM)&channel);
+    PlaceSettings(IDC_SETTINGS_DESKTOP_WIDGET,26,104,field_width,22);
+    PlaceSettings(248,26,133,field_width,16);PlaceSettings(224,26,151,field_width,22);
+    PlaceSettings(225,26,174,field_width,22);PlaceSettings(246,26,197,field_width,22);
+    PlaceSettings(222,26,238,field_width-65,20);PlaceSettings(263,width-86,238,60,20);
+    PlaceSettings(213,26,260,field_width,24);SendMessageW(GetDlgItem(s_window,213),TBM_GETCHANNELRECT,0,(LPARAM)&channel);
     const int positions[]={1,15,30};for(int i=0;i<3;i++){
         int center=S(26)+channel.left+MulDiv(channel.right-channel.left,positions[i]-1,29);
-        SetWindowPos(GetDlgItem(s_window,264+i),NULL,center-S(14),S(281),S(28),S(14),SWP_NOZORDER|SWP_NOACTIVATE);
+        SetWindowPos(GetDlgItem(s_window,264+i),NULL,center-S(14),S(285),S(28),S(14),SWP_NOZORDER|SWP_NOACTIVATE);
     }
-    PlaceSettings(257,26,302,field_width,26);
+    PlaceSettings(257,26,305,field_width,26);
     PlaceSettings(223,26,height-86,field_width,32);
     PlaceSettings(267,14,height-42,118,28);PlaceSettings(IDCANCEL,width-162,height-42,66,28);PlaceSettings(IDOK,width-90,height-42,76,28);
     if(s_notifications)SetWindowPos(s_notifications,NULL,S(20),S(52),S(width-40),S(max(40,height-146)),SWP_NOZORDER|SWP_NOACTIVATE);
@@ -465,8 +468,9 @@ static void UpdateSettingsLanguage(void)
     UpdateSettingsRefreshReadout();
     SetWindowTextW(GetDlgItem(s_window,222),g_russian?L"Задач в меню трея":L"Tasks in tray menu");
     UpdateSettingsTrayReadout();
-    SetWindowTextW(GetDlgItem(s_window,247),g_russian?L"Запуск":L"Startup");
+    SetWindowTextW(GetDlgItem(s_window,247),g_russian?L"Запуск и сворачивание":L"Startup and minimizing");
     SetWindowTextW(GetDlgItem(s_window,248),g_russian?L"Список задач":L"Task list");
+    SetWindowTextW(SettingsItem(IDC_SETTINGS_DESKTOP_WIDGET),g_russian?L"Показывать виджет на рабочем столе":L"Show the desktop widget");
     SetWindowTextW(GetDlgItem(s_window,214),g_russian?L"Запускать вместе с Windows":L"Start with Windows");
     SetWindowTextW(SettingsItem(224),g_russian?L"Показывать количество задач во вкладках":L"Show task totals in tabs");
     SetWindowTextW(SettingsItem(225),g_russian?L"Показывать вкладку «Все»":L"Show the All tab");
@@ -496,7 +500,7 @@ static void ResetSettingsDraft(void)
     BOOL initializing=s_initializing;s_initializing=TRUE;
     SendMessageW(s_interval,TBM_SETPOS,TRUE,30);SendMessageW(SettingsItem(213),TBM_SETPOS,TRUE,20);
     UpdateSettingsRefreshReadout();UpdateSettingsTrayReadout();
-    const int enabled[]={224,246,250,251,261},disabled[]={214,225};
+    const int enabled[]={224,246,250,251,261},disabled[]={214,225,IDC_SETTINGS_DESKTOP_WIDGET};
     for(int i=0;i<_countof(enabled);i++)SendMessageW(SettingsItem(enabled[i]),BM_SETCHECK,BST_CHECKED,0);
     for(int i=0;i<_countof(disabled);i++)SendMessageW(SettingsItem(disabled[i]),BM_SETCHECK,BST_UNCHECKED,0);
     SetWindowTextW(SettingsItem(252),NATIVE_EXCLUDED_EMAILS_DEFAULT);SetWindowTextW(SettingsItem(259),L"7");
@@ -521,6 +525,7 @@ static BOOL SaveNativePreferences(void)
     preferences.statuses=SendMessageW(SettingsItem(261),BM_GETCHECK,0,0)==BST_CHECKED;
     if(count<1||count>30){SettingsTab(3);SetWindowTextW(s_note,g_russian?L"Задач в трее: 1–30.":L"Tray tasks: 1–30.");SetFocus(GetDlgItem(s_window,213));return FALSE;}
     BOOL startup=SendMessageW(GetDlgItem(s_window,214),BM_GETCHECK,0,0)==BST_CHECKED;
+    BOOL desktop_widget=SendMessageW(SettingsItem(IDC_SETTINGS_DESKTOP_WIDGET),BM_GETCHECK,0,0)==BST_CHECKED;
     if(startup!=NativeStartupEnabled()&&!SetNativeStartup(startup)){SettingsTab(3);SetWindowTextW(s_note,g_russian?L"Не удалось сохранить автозапуск Native.":L"Could not save Native startup preference.");return FALSE;}
     if(!WritePrivateProfileStringW(L"Jira",L"RefreshMinutes",interval,g_settings_path)||!WritePrivateProfileStringW(L"Jira",L"TrayTaskCount",tray,g_settings_path)||
         !NativeRememberRemovedExclusions(g_settings_path,g_notifications.excluded,preferences.excluded)||!NativeNotificationsSave(g_settings_path,&preferences)||!NativeAvatarCacheSaveDays(g_settings_path,(UINT)avatar_days)||
@@ -528,7 +533,8 @@ static BOOL SaveNativePreferences(void)
         !NativeClearLegacyTokenLabels(g_settings_path)||
         !WritePrivateProfileStringW(L"Interface",L"ShowTabTaskCounts",SendMessageW(SettingsItem(224),BM_GETCHECK,0,0)==BST_CHECKED?L"1":L"0",g_settings_path)||
         !WritePrivateProfileStringW(L"Interface",L"ShowAllTab",SendMessageW(SettingsItem(225),BM_GETCHECK,0,0)==BST_CHECKED?L"1":L"0",g_settings_path)||
-        !WritePrivateProfileStringW(L"Interface",L"ShowDoneTab",SendMessageW(SettingsItem(246),BM_GETCHECK,0,0)==BST_CHECKED?L"1":L"0",g_settings_path)){
+        !WritePrivateProfileStringW(L"Interface",L"ShowDoneTab",SendMessageW(SettingsItem(246),BM_GETCHECK,0,0)==BST_CHECKED?L"1":L"0",g_settings_path)||
+        !WritePrivateProfileStringW(L"Interface",L"DesktopWidget",desktop_widget?L"1":L"0",g_settings_path)){
         SettingsTab(0);SetWindowTextW(s_note,g_russian?L"Не удалось сохранить настройки. Проверьте доступ к папке.":L"Could not save settings. Check folder access.");return FALSE;
     }
     if(wcscmp(g_notifications.excluded,preferences.excluded)&&g_image_viewer&&IsWindow(g_image_viewer))DestroyWindow(g_image_viewer);
@@ -537,6 +543,8 @@ static BOOL SaveNativePreferences(void)
     g_show_tab_task_counts=SendMessageW(SettingsItem(224),BM_GETCHECK,0,0)==BST_CHECKED;
     g_show_all_tab=SendMessageW(SettingsItem(225),BM_GETCHECK,0,0)==BST_CHECKED;
     g_show_done_tab=SendMessageW(SettingsItem(246),BM_GETCHECK,0,0)==BST_CHECKED;
+    g_desktop_widget_enabled=desktop_widget;
+    if(!desktop_widget)HideDesktopWidget();
     s_original_all_tab=g_show_all_tab;s_original_done_tab=g_show_done_tab;s_hidden_tab_fallback=-1;
     s_original_task_alerts=g_notifications.tasks;s_original_comment_alerts=g_notifications.comments;s_original_status_alerts=g_notifications.statuses;s_original_tab_counts=g_show_tab_task_counts;s_preferences_saved=TRUE;
     for(int i=0;i<g_snapshot.count;i++)if(NativeEmailExcluded(preferences.excluded,g_snapshot.items[i].latest_comment_email)){
@@ -556,7 +564,7 @@ static BOOL SaveNativePreferences(void)
 }
 static void FreezeSettings(BOOL freeze)
 {
-    int ids[]={IDOK,210,211,212,213,214,215,224,225,246,267,270,274};for(int i=0;i<_countof(ids);i++)EnableWindow(GetDlgItem(s_window,ids[i]),!freeze);
+    int ids[]={IDOK,210,211,212,213,214,215,224,225,246,267,270,274,IDC_SETTINGS_DESKTOP_WIDGET};for(int i=0;i<_countof(ids);i++)EnableWindow(GetDlgItem(s_window,ids[i]),!freeze);
     for(int id=250;id<=252;id++)EnableWindow(SettingsItem(id),!freeze);
     EnableWindow(SettingsItem(261),!freeze);
     EnableWindow(SettingsItem(257),!freeze);EnableWindow(SettingsItem(259),!freeze);
@@ -661,10 +669,13 @@ static LRESULT CALLBACK SettingsProcedure(HWND window,UINT message,WPARAM wp,LPA
         SettingsControl(L"BUTTON",g_russian?L"Приостанавливать обновления при блокировке компьютера":L"Pause updates when the computer is locked",WS_TABSTOP|BS_AUTOCHECKBOX,26,300,378,26,270,0);
         SendMessageW(SettingsItem(270),BM_SETCHECK,g_pause_when_locked?BST_CHECKED:BST_UNCHECKED,0);
         UpdateSettingsRefreshReadout();
-        SettingsControl(L"STATIC",g_russian?L"Запуск":L"Startup",0,26,60,378,16,247,3);
+        SettingsControl(L"STATIC",g_russian?L"Запуск и сворачивание":L"Startup and minimizing",0,26,60,378,16,247,3);
         SettingsControl(L"STATIC",g_russian?L"Список задач":L"Task list",0,26,120,378,16,248,3);
         SettingsControl(L"BUTTON",g_russian?L"Запускать вместе с Windows":L"Start with Windows",WS_TABSTOP|BS_AUTOCHECKBOX,26,80,378,22,214,3);
         s_original_startup=NativeStartupEnabled();SendMessageW(GetDlgItem(window,214),BM_SETCHECK,s_original_startup?BST_CHECKED:BST_UNCHECKED,0);
+        SettingsControl(L"BUTTON",g_russian?L"Показывать виджет на рабочем столе":L"Show the desktop widget",
+            WS_TABSTOP|BS_AUTOCHECKBOX,26,104,378,22,IDC_SETTINGS_DESKTOP_WIDGET,3);
+        SendMessageW(SettingsItem(IDC_SETTINGS_DESKTOP_WIDGET),BM_SETCHECK,g_desktop_widget_enabled?BST_CHECKED:BST_UNCHECKED,0);
         SettingsControl(L"BUTTON",g_russian?L"Показывать количество задач во вкладках":L"Show task totals in tabs",WS_TABSTOP|BS_AUTOCHECKBOX,26,140,378,22,224,3);
         SendMessageW(SettingsItem(224),BM_SETCHECK,g_show_tab_task_counts?BST_CHECKED:BST_UNCHECKED,0);
         SettingsControl(L"BUTTON",g_russian?L"Показывать вкладку «Все»":L"Show the All tab",WS_TABSTOP|BS_AUTOCHECKBOX,26,164,378,22,225,3);
@@ -717,7 +728,12 @@ static LRESULT CALLBACK SettingsProcedure(HWND window,UINT message,WPARAM wp,LPA
         if(LOWORD(wp)==252&&(HIWORD(wp)==EN_CHANGE||HIWORD(wp)==EN_UPDATE)){UpdateExclusionScrollBar();return 0;}
         if((LOWORD(wp)==224||LOWORD(wp)==225||LOWORD(wp)==246||LOWORD(wp)==250||LOWORD(wp)==251||LOWORD(wp)==261)&&HIWORD(wp)==BN_CLICKED&&!s_initializing&&!s_busy){ApplySettingsCheckboxPreview();return 0;}
         if(LOWORD(wp)==257&&!s_busy){OpenAdvancedSettingsWindow();return 0;}
-        if(LOWORD(wp)==242){if(u_state==UPDATE_UI_AVAILABLE||u_state==UPDATE_UI_READY)UpdateDetailsOpen(window);else UpdateUiBeginCheck(window);return 0;}
+        if(LOWORD(wp)==242){
+            if(u_state==UPDATE_UI_AVAILABLE||u_state==UPDATE_UI_READY||UpdateCanRetryInstall()||
+                (u_state==UPDATE_UI_ERROR&&u_failed_action==1&&u_release.asset_id))UpdateDetailsOpen(window);
+            else UpdateUiBeginCheck(window);
+            return 0;
+        }
         if(LOWORD(wp)==210&&HIWORD(wp)==EN_CHANGE&&!s_initializing&&!s_busy){
             wchar_t entered[768];GetWindowTextW(s_url,entered,768);BOOL connected=s_has_account&&!wcscmp(entered,s_original_url);
             if(connected&&GetWindowTextLengthW(s_token))s_replacing_token=TRUE;
@@ -820,7 +836,7 @@ static LRESULT CALLBACK SettingsProcedure(HWND window,UINT message,WPARAM wp,LPA
                 RECT box;GetWindowRect(edit,&box);MapWindowPoints(NULL,window,(POINT*)&box,2);InflateRect(&box,S(6),S(3));
                 FillRect(dc,&box,g_panel_brush);HBRUSH edge=CreateSolidBrush(GetFocus()==edit?AccentColor():(g_dark?RGB(85,85,90):RGB(175,175,175)));FrameRect(dc,&box,edge);DeleteObject(edge);
             }
-        }else if(s_tab==3){RECT divider={S(26),S(222),client.right-S(26),S(222)+1};FillRect(dc,&divider,b);}
+        }else if(s_tab==3){RECT divider={S(26),S(229),client.right-S(26),S(229)+1};FillRect(dc,&divider,b);}
         else if(s_tab==1){RECT divider={S(26),s_about_divider_y,client.right-S(26),s_about_divider_y+1};FillRect(dc,&divider,b);}
         DeleteObject(b);if(!wp)EndPaint(window,&paint);return 0;}
     case WM_DRAWITEM:{
