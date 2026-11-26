@@ -3,7 +3,7 @@
 A native Windows desktop client for personal Jira tasks, built with the Win32 API.
 No third-party UI or runtime libraries are required.
 
-Version: **0.9.48**.
+Version: **0.9.52**.
 
 Application updates show release notes before downloading, byte-based progress and a separate verification phase. Downloads can be cancelled; installation remains a user action.
 

@@ -82,29 +82,41 @@ static int TimerReservedWidth(HDC dc)
     const wchar_t *text=TimerHomeCaption();GetTextExtentPoint32W(dc,text,(int)wcslen(text),&caption);SelectObject(dc,old);
     return TimerNumberSlotWidth(dc)+caption.cx+D(16)+D(4);
 }
-static void DrawWorkdayProgress(HDC dc,RECT rect,int height)
+static COLORREF WorkdayProgressTrackColor(void)
 {
-    int width=max(0,rect.right-rect.left),y=rect.top+(rect.bottom-rect.top-height)/2;
-    HRGN shape=width?CreateRoundRectRgn(rect.left,y,rect.right+1,y+height+1,height,height):NULL;
+    return g_dark?RGB(52,58,67):RGB(224,229,235);
+}
+
+static void DrawWorkdayProgressSurface(HDC dc,RECT rect,int rounding,COLORREF track_color)
+{
+    int width=rect.right-rect.left;
+    if(width<=0||rect.bottom<=rect.top)return;
+    HRGN shape=CreateRoundRectRgn(rect.left,rect.top,rect.right+1,rect.bottom+1,rounding,rounding);
     if(!shape)return;
-    HBRUSH track=CreateSolidBrush(g_dark?RGB(52,58,67):RGB(224,229,235));
+    HBRUSH track=CreateSolidBrush(track_color);
     COLORREF fill_color=g_timer_overrun?(g_dark?RGB(115,63,70):RGB(245,183,188)):(g_dark?RGB(51,92,125):RGB(182,217,245));
     HBRUSH fill=CreateSolidBrush(fill_color);
     FillRgn(dc,shape,track);
     int saved=SaveDC(dc);
     if(saved){
-        IntersectClipRect(dc,rect.left,y,rect.left+MulDiv(width,g_timer_bar_amount,1000),y+height+1);
+        IntersectClipRect(dc,rect.left,rect.top,rect.left+MulDiv(width,g_timer_bar_amount,1000),rect.bottom+1);
         FillRgn(dc,shape,fill);RestoreDC(dc,saved);
     }
     wchar_t percent[8];swprintf(percent,_countof(percent),L"%d%%",g_timer_bar_amount/10);
-    RECT label={rect.left,y,rect.right,y+height};
     int label_state=SaveDC(dc);
     if(label_state){
         SetBkMode(dc,TRANSPARENT);SetTextColor(dc,TextColor());
-        DrawTextW(dc,percent,-1,&label,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
+        DrawTextW(dc,percent,-1,&rect,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
         RestoreDC(dc,label_state);
     }
     DeleteObject(track);DeleteObject(fill);DeleteObject(shape);
+}
+
+static void DrawWorkdayProgress(HDC dc,RECT rect,int height)
+{
+    rect.top+=(rect.bottom-rect.top-height)/2;
+    rect.bottom=rect.top+height;
+    DrawWorkdayProgressSurface(dc,rect,height,WorkdayProgressTrackColor());
 }
 
 static void DrawTimerCaption(HDC dc,RECT rect,COLORREF ordinary)

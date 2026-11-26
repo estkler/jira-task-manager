@@ -25,7 +25,7 @@
 #include "native_refresh_interval.h"
 #include "native_auto_refresh.h"
 
-#define APP_VERSION L"0.9.48"
+#define APP_VERSION L"0.9.52"
 #define APP_TITLE TASK_MANAGER_TITLE
 #define WM_TRAYICON (WM_APP + 1)
 
@@ -4832,6 +4832,19 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
         if(w_param==WTS_SESSION_LOGON||w_param==WTS_SESSION_UNLOCK)StartWorkdayForInteractiveSession();
         return 0;
 
+    case WM_SYSCOMMAND:
+        if((w_param&0xfff0)==SC_MINIMIZE&&CaptureDesktopWidgetTransition(window)){
+            BOOL disable=TRUE;
+            if(SUCCEEDED(DwmSetWindowAttribute(window,DWMWA_TRANSITIONS_FORCEDISABLED,&disable,sizeof(disable)))){
+                g_widget_transition.system_transition_owner=window;
+                LRESULT result=DefWindowProcW(window,message,w_param,l_param);
+                if(!g_widget_transition.window)CancelDesktopWidgetTransition();
+                return result;
+            }
+            CancelDesktopWidgetTransition();
+        }
+        break;
+
     case WM_SIZE:{
         BOOL minimized=w_param==SIZE_MINIMIZED;
         BOOL just_minimized=minimized&&g_desktop_widget_main_shown&&IsWindowVisible(window);
@@ -4886,14 +4899,20 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
         return 0;
     }
 
+    case WM_PRINTCLIENT:
     case WM_PAINT: {
-        PAINTSTRUCT paint;HDC dc=BeginPaint(window,&paint);
-        FillRect(dc,&paint.rcPaint,g_window_brush);
+        PAINTSTRUCT paint;
+        HDC dc;
+        RECT bounds;
+        if(message==WM_PAINT){dc=BeginPaint(window,&paint);bounds=paint.rcPaint;}
+        else {dc=(HDC)w_param;GetClientRect(window,&bounds);}
+        FillRect(dc,&bounds,g_window_brush);
         HPEN pen=CreatePen(PS_SOLID,1,g_bookmarks.editing?AccentColor():BorderColor());HGDIOBJ previous=SelectObject(dc,pen),brush=SelectObject(dc,g_panel_brush);
         RoundRect(dc,g_search_frame.left,g_search_frame.top,g_search_frame.right,g_search_frame.bottom,D(5),D(5));
         SelectObject(dc,brush);SelectObject(dc,previous);DeleteObject(pen);
         DrawControlIcon(dc,IDC_SEARCH,g_search_frame.left+D(13),(g_search_frame.top+g_search_frame.bottom)/2,MutedColor());
-        EndPaint(window,&paint);return 0;
+        if(message==WM_PAINT)EndPaint(window,&paint);
+        return 0;
     }
 
     case WM_TIMER:
@@ -5104,6 +5123,7 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
         }
         if (!g_allow_close) {
             BOOL was_visible=IsWindowVisible(window);
+            if(was_visible)CaptureDesktopWidgetTransition(window);
             NativeLifecycleEvent(&g_lifecycle,L"window_hidden",L"reason=close_button; application_remains_in_tray");
             ShowWindow(window, SW_HIDE);
             if(was_visible)ShowDesktopWidget();
@@ -5112,6 +5132,7 @@ static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM w_para
         break;
 
     case WM_DESTROY:
+        CancelDesktopWidgetTransition();
         if(g_desktop_widget)DestroyWindow(g_desktop_widget);
         CloseStatusMark();
         if(g_status_marks.ready&&g_status_marks.dirty)StatusMarksSave(&g_status_marks,g_settings_path);

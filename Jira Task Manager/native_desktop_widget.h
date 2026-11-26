@@ -9,7 +9,10 @@ static HWND g_widget_drag_source;
 static ULONGLONG g_widget_fade_started;
 
 enum { WIDGET_OPEN = 1, WIDGET_HIDE, WIDGET_TIMER, WIDGET_EDIT, WIDGET_HEIGHT = 38,
-    WIDGET_FADE_TIMER = 1, WIDGET_FADE_MS = 150 };
+    WIDGET_FADE_TIMER = 1, WIDGET_FADE_MS = 150,
+    WIDGET_CLOSE_SPACE = 27, WIDGET_IDLE_OPEN_SPACE = 32, WIDGET_TIMER_PADDING = 7 };
+
+#include "native_widget_transition.h"
 
 static int WidgetScale(int value)
 {
@@ -23,7 +26,7 @@ static COLORREF WidgetBackground(void)
 
 static COLORREF WidgetBorder(void)
 {
-    return g_dark?RGB(66,72,82):RGB(210,218,228);
+    return g_dark?RGB(108,119,134):RGB(126,137,151);
 }
 
 static const TaskItem *DesktopWidgetActiveTask(void)
@@ -34,35 +37,23 @@ static const TaskItem *DesktopWidgetActiveTask(void)
     return NULL;
 }
 
-static const wchar_t *DesktopWidgetEmptyText(void)
+static int DesktopWidgetTimerWidth(HWND window)
 {
-    return g_russian?L"Нет активной задачи":L"No active task";
-}
-
-static void RefreshDesktopWidgetTask(void)
-{
-    if(!g_desktop_widget||!IsWindowVisible(g_desktop_widget))return;
-    HWND button=GetDlgItem(g_desktop_widget,WIDGET_OPEN);
-    const TaskItem *task=DesktopWidgetActiveTask();
-    wchar_t label[_countof(((JiraItem*)0)->key)+_countof(((JiraItem*)0)->summary)+1];
-    if(task)swprintf(label,_countof(label),L"%ls  %ls",task->key,task->summary);
-    else wcscpy_s(label,_countof(label),DesktopWidgetEmptyText());
-    SetWindowTextW(button,label);
-    InvalidateRect(button,NULL,FALSE);
+    const wchar_t *sample=g_russian?L"88ч 88м 88с":L"88h 88m 88s";
+    SIZE text={0};
+    HDC dc=GetDC(window);
+    HGDIOBJ font=SelectObject(dc,g_desktop_widget_font?g_desktop_widget_font:g_font);
+    GetTextExtentPoint32W(dc,sample,(int)wcslen(sample),&text);
+    SelectObject(dc,font);ReleaseDC(window,dc);
+    return text.cx+2*WidgetScale(WIDGET_TIMER_PADDING);
 }
 
 static RECT DesktopWidgetTimerRect(HWND window)
 {
     RECT bounds;
     GetClientRect(window,&bounds);
-    const wchar_t *sample=g_text_time?(g_russian?L"88ч 88м 88с":L"88h 88m 88s"):L"88:88:88";
-    SIZE text={0};
-    HDC dc=GetDC(window);
-    HGDIOBJ font=SelectObject(dc,g_desktop_widget_font?g_desktop_widget_font:g_font);
-    GetTextExtentPoint32W(dc,sample,(int)wcslen(sample),&text);
-    SelectObject(dc,font);ReleaseDC(window,dc);
-    bounds.right-=WidgetScale(27);
-    bounds.left=max(0,bounds.right-text.cx-WidgetScale(23));
+    bounds.right-=WidgetScale(WIDGET_CLOSE_SPACE);
+    bounds.left=max(0,bounds.right-DesktopWidgetTimerWidth(window));
     bounds.top=WidgetScale(3);
     bounds.bottom-=WidgetScale(3);
     return bounds;
@@ -106,6 +97,7 @@ static void EndWidgetStartEdit(void)
 
 static void HideDesktopWidget(void)
 {
+    CancelDesktopWidgetTransition();
     if(!g_desktop_widget)return;
     EndWidgetStartEdit();
     KillTimer(g_desktop_widget,WIDGET_FADE_TIMER);
@@ -113,6 +105,13 @@ static void HideDesktopWidget(void)
     if(g_widget_tooltip)SendMessageW(g_widget_tooltip,TTM_POP,0,0);
     if(g_widget_drag_source&&GetCapture()==g_widget_drag_source)ReleaseCapture();
     ShowWindow(g_desktop_widget,SW_HIDE);
+}
+
+static int DesktopWidgetWidth(HWND window,int work_width)
+{
+    int preferred=DesktopWidgetActiveTask()?WidgetScale(398):
+        WidgetScale(WIDGET_IDLE_OPEN_SPACE)+DesktopWidgetTimerWidth(window)+WidgetScale(WIDGET_CLOSE_SPACE);
+    return min(preferred,work_width-WidgetScale(10)*2);
 }
 
 static void PositionDesktopWidget(HWND window,HMONITOR monitor,UINT dpi,const POINT *origin)
@@ -130,7 +129,7 @@ static void PositionDesktopWidget(HWND window,HMONITOR monitor,UINT dpi,const PO
             DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Segoe UI");
     }
     int inset=WidgetScale(10),height=WidgetScale(WIDGET_HEIGHT);
-    int width=min(WidgetScale(398),work_width-inset*2);
+    int width=DesktopWidgetWidth(window,work_width);
     int x=info.rcWork.right-inset-width,y=info.rcWork.bottom-inset-height;
     if(origin){
         x=max(info.rcWork.left,min(info.rcWork.right-width,origin->x));
@@ -146,32 +145,61 @@ static void PositionDesktopWidget(HWND window,HMONITOR monitor,UINT dpi,const PO
     if(corners&&!SetWindowRgn(window,corners,TRUE))DeleteObject(corners);
 }
 
-static void PaintWidgetTask(HDC dc,RECT bounds)
+static void RefreshDesktopWidgetLayout(HWND window)
 {
-    const TaskItem *task=DesktopWidgetActiveTask();
-    bounds.left+=WidgetScale(8);
-    bounds.right-=WidgetScale(4);
-    const UINT text_flags=DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX;
-    if(task){
-        int dot=WidgetScale(7),top=(bounds.bottom-dot)/2;
-        HBRUSH amber=CreateSolidBrush(g_dark?RGB(246,181,77):RGB(203,132,25));
-        HGDIOBJ old_brush=SelectObject(dc,amber),old_pen=SelectObject(dc,GetStockObject(NULL_PEN));
-        Ellipse(dc,bounds.left,top,bounds.left+dot,top+dot);
-        SelectObject(dc,old_pen);SelectObject(dc,old_brush);DeleteObject(amber);
-        bounds.left+=dot+WidgetScale(9);
-        SIZE key={0};
-        GetTextExtentPoint32W(dc,task->key,(int)wcslen(task->key),&key);
-        RECT key_bounds=bounds;
-        key_bounds.right=min(bounds.right,bounds.left+min(key.cx,WidgetScale(108)));
-        SetTextColor(dc,AccentColor());
-        DrawTextW(dc,task->key,-1,&key_bounds,text_flags);
-        bounds.left=key_bounds.right+WidgetScale(9);
-    }
-    SetTextColor(dc,task?TextColor():MutedColor());
-    if(bounds.left<bounds.right)DrawTextW(dc,task?task->summary:DesktopWidgetEmptyText(),-1,&bounds,text_flags);
+    if(g_widget_drag_source)return;
+    HMONITOR monitor=MonitorFromWindow(window,MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info={sizeof(info)};
+    RECT bounds;
+    if(GetMonitorInfoW(monitor,&info)&&GetClientRect(window,&bounds)&&
+       bounds.right!=DesktopWidgetWidth(window,info.rcWork.right-info.rcWork.left)){
+        CompleteDesktopWidgetTransition();
+        PositionDesktopWidget(window,monitor,GetDpiForWindow(window),g_widget_position_saved?&g_widget_position:NULL);
+        InvalidateRect(window,NULL,TRUE);
+    }else LayoutDesktopWidget(window);
 }
 
-static void PaintWidgetTime(HDC dc,RECT bounds);
+static void RefreshDesktopWidgetTask(void)
+{
+    if(!g_desktop_widget||!IsWindowVisible(g_desktop_widget))return;
+    HWND button=GetDlgItem(g_desktop_widget,WIDGET_OPEN);
+    const TaskItem *task=DesktopWidgetActiveTask();
+    wchar_t label[_countof(((JiraItem*)0)->key)+_countof(((JiraItem*)0)->summary)+1];
+    if(task)swprintf(label,_countof(label),L"%ls  %ls",task->key,task->summary);
+    else wcscpy_s(label,_countof(label),g_russian?L"Открыть Jira Tasklet":L"Open Jira Tasklet");
+    SetWindowTextW(button,label);
+    RefreshDesktopWidgetLayout(g_desktop_widget);
+    InvalidateRect(button,NULL,FALSE);
+    InvalidateRect(GetDlgItem(g_desktop_widget,WIDGET_TIMER),NULL,FALSE);
+}
+
+static void PaintWidgetOpen(HDC dc,RECT bounds)
+{
+    int icon_size=WidgetScale(16);
+    DrawIconEx(dc,bounds.left+WidgetScale(6),(bounds.top+bounds.bottom-icon_size)/2,
+        LoadAppIcon(TRUE),icon_size,icon_size,0,NULL,DI_NORMAL);
+    const TaskItem *task=DesktopWidgetActiveTask();
+    if(!task)return;
+    bounds.left+=WidgetScale(30);
+    bounds.right-=WidgetScale(4);
+    const UINT text_flags=DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX;
+    SIZE key={0};
+    GetTextExtentPoint32W(dc,task->key,(int)wcslen(task->key),&key);
+    RECT key_bounds=bounds;
+    key_bounds.right=min(bounds.right,bounds.left+min(key.cx,WidgetScale(108)));
+    SetTextColor(dc,AccentColor());
+    DrawTextW(dc,task->key,-1,&key_bounds,text_flags);
+    bounds.left=key_bounds.right+WidgetScale(9);
+    SetTextColor(dc,TextColor());
+    if(bounds.left<bounds.right)DrawTextW(dc,task->summary,-1,&bounds,text_flags);
+}
+
+static COLORREF WidgetHoverColor(void)
+{
+    return g_dark?RGB(52,59,68):RGB(232,237,243);
+}
+
+static void PaintWidgetTime(HDC dc,RECT bounds,BOOL highlighted);
 
 static void PaintWidgetButton(const DRAWITEMSTRUCT *draw)
 {
@@ -185,10 +213,11 @@ static void PaintWidgetButton(const DRAWITEMSTRUCT *draw)
     }
     POINT cursor;
     BOOL hover=GetCursorPos(&cursor)&&ScreenToClient(draw->hwndItem,&cursor)&&PtInRect(&bounds,cursor);
+    BOOL highlighted=hover||(draw->itemState&ODS_SELECTED);
     HBRUSH base=CreateSolidBrush(WidgetBackground());
     FillRect(dc,&bounds,base);DeleteObject(base);
-    if(hover||draw->itemState&ODS_SELECTED){
-        HBRUSH fill=CreateSolidBrush(g_dark?RGB(52,59,68):RGB(232,237,243));
+    if(highlighted&&!(draw->CtlID==WIDGET_TIMER&&g_bar_time)){
+        HBRUSH fill=CreateSolidBrush(WidgetHoverColor());
         HGDIOBJ old_brush=SelectObject(dc,fill),old_pen=SelectObject(dc,GetStockObject(NULL_PEN));
         RoundRect(dc,0,0,bounds.right,bounds.bottom,WidgetScale(12),WidgetScale(12));
         SelectObject(dc,old_pen);SelectObject(dc,old_brush);DeleteObject(fill);
@@ -196,10 +225,10 @@ static void PaintWidgetButton(const DRAWITEMSTRUCT *draw)
     if(draw->CtlID==WIDGET_OPEN){
         SetBkMode(dc,TRANSPARENT);
         HGDIOBJ font=SelectObject(dc,g_desktop_widget_font?g_desktop_widget_font:g_font);
-        PaintWidgetTask(dc,bounds);
+        PaintWidgetOpen(dc,bounds);
         SelectObject(dc,font);
     }else if(draw->CtlID==WIDGET_TIMER){
-        PaintWidgetTime(dc,bounds);
+        PaintWidgetTime(dc,bounds,highlighted);
     }else{
         int cx=bounds.right/2,cy=bounds.bottom/2,arm=WidgetScale(4);
         HPEN pen=CreatePen(PS_SOLID,max(1,WidgetScale(1)),MutedColor());
@@ -215,25 +244,23 @@ static void PaintWidgetButton(const DRAWITEMSTRUCT *draw)
     if(buffer)DeleteDC(buffer);
 }
 
-static void PaintWidgetTime(HDC dc,RECT bounds)
+static void PaintWidgetTime(HDC dc,RECT bounds,BOOL highlighted)
 {
-    int middle=(bounds.top+bounds.bottom)/2,cx=bounds.left+WidgetScale(10),radius=WidgetScale(5);
-    HBRUSH separator=CreateSolidBrush(WidgetBorder());
+    HGDIOBJ font=SelectObject(dc,g_desktop_widget_font?g_desktop_widget_font:g_font);
+    if(g_bar_time){
+        DrawWorkdayProgressSurface(dc,bounds,WidgetScale(12),
+            highlighted?WidgetHoverColor():WorkdayProgressTrackColor());
+        SelectObject(dc,font);
+        return;
+    }
+    int middle=(bounds.top+bounds.bottom)/2;
+    HBRUSH separator=CreateSolidBrush(g_dark?RGB(66,72,82):RGB(210,218,228));
     RECT line={bounds.left,middle-WidgetScale(9),bounds.left+1,middle+WidgetScale(9)};
     FillRect(dc,&line,separator);DeleteObject(separator);
-    HPEN pen=CreatePen(PS_SOLID,max(1,WidgetScale(1)),MutedColor());
-    HGDIOBJ old_pen=SelectObject(dc,pen),old_brush=SelectObject(dc,GetStockObject(NULL_BRUSH));
-    Ellipse(dc,cx-radius,middle-radius,cx+radius+1,middle+radius+1);
-    MoveToEx(dc,cx,middle-WidgetScale(3),NULL);LineTo(dc,cx,middle);
-    LineTo(dc,cx+WidgetScale(3),middle+WidgetScale(2));
-    SelectObject(dc,old_brush);SelectObject(dc,old_pen);DeleteObject(pen);
-    HGDIOBJ font=SelectObject(dc,g_desktop_widget_font?g_desktop_widget_font:g_font);
     SetBkMode(dc,TRANSPARENT);
     SetTextColor(dc,g_timer_overrun?(g_dark?RGB(255,111,116):RGB(190,30,40)):TextColor());
-    bounds.left=cx+WidgetScale(10);bounds.right-=WidgetScale(3);
-    if(g_bar_time)DrawWorkdayProgress(dc,bounds,WidgetScale(18));
-    else DrawTextW(dc,g_timer_numbers,-1,&bounds,
-        (g_text_time?DT_RIGHT:DT_LEFT)|DT_SINGLELINE|DT_VCENTER|DT_NOPREFIX);
+    bounds.left+=WidgetScale(WIDGET_TIMER_PADDING);bounds.right-=WidgetScale(WIDGET_TIMER_PADDING);
+    DrawTextW(dc,g_timer_numbers,-1,&bounds,DT_CENTER|DT_SINGLELINE|DT_VCENTER|DT_NOPREFIX);
     SelectObject(dc,font);
 }
 
@@ -266,6 +293,7 @@ static BOOL HandleWidgetDrag(HWND source,UINT message,LPARAM lp)
     HWND widget=g_desktop_widget;
     switch(message){
     case WM_LBUTTONDOWN:{
+        CompleteDesktopWidgetTransition();
         RECT bounds;GetWindowRect(widget,&bounds);
         POINT point={GET_X_LPARAM(lp),GET_Y_LPARAM(lp)};
         ClientToScreen(source,&point);
@@ -290,7 +318,7 @@ static BOOL HandleWidgetDrag(HWND source,UINT message,LPARAM lp)
             else if(source!=widget){
                 RECT client;GetClientRect(source,&client);
                 if(PtInRect(&client,(POINT){GET_X_LPARAM(lp),GET_Y_LPARAM(lp)}))
-                    SendMessageW(widget,WM_COMMAND,MAKEWPARAM(WIDGET_OPEN,BN_CLICKED),(LPARAM)source);
+                    SendMessageW(widget,WM_COMMAND,MAKEWPARAM(GetDlgCtrlID(source),BN_CLICKED),(LPARAM)source);
             }
             return TRUE;
         }
@@ -349,14 +377,16 @@ static LRESULT CALLBACK DesktopWidgetButtonProcedure(HWND window,UINT message,WP
     UINT_PTR subclass,DWORD_PTR reference)
 {
     int control=GetDlgCtrlID(window);
-    if(control==WIDGET_OPEN&&HandleWidgetDrag(window,message,lp))return 0;
-    if(control==WIDGET_OPEN&&message==BM_CLICK){
-        SendMessageW(GetParent(window),WM_COMMAND,MAKEWPARAM(WIDGET_OPEN,BN_CLICKED),(LPARAM)window);
+    if(message==WM_LBUTTONDOWN||message==WM_RBUTTONDOWN)CompleteDesktopWidgetTransition();
+    BOOL draggable=control==WIDGET_OPEN||control==WIDGET_TIMER;
+    if(draggable&&HandleWidgetDrag(window,message,lp))return 0;
+    if(draggable&&message==BM_CLICK){
+        SendMessageW(GetParent(window),WM_COMMAND,MAKEWPARAM(control,BN_CLICKED),(LPARAM)window);
         return 0;
     }
-    if(control==WIDGET_TIMER&&(message==WM_RBUTTONUP||message==WM_CONTEXTMENU)){
+    if(draggable&&(message==WM_RBUTTONUP||message==WM_CONTEXTMENU)){
         if(message==WM_RBUTTONUP||(LPARAM)-1==lp){
-            ToggleTimerFormat();LayoutDesktopWidget(GetParent(window));
+            ToggleTimerFormat();
         }
         return 0;
     }
@@ -420,7 +450,8 @@ static LRESULT CALLBACK DesktopWidgetProcedure(HWND window,UINT message,WPARAM w
         EndPaint(window,&paint);return 0;
     }
     case WM_TIMER:
-        if(wp==WIDGET_FADE_TIMER&&g_widget_fade_started){
+        if(wp==WIDGET_TRANSITION_TIMER)DesktopWidgetTransitionTick(GetTickCount64());
+        else if(wp==WIDGET_FADE_TIMER&&g_widget_fade_started){
             ULONGLONG elapsed=min(GetTickCount64()-g_widget_fade_started,(ULONGLONG)WIDGET_FADE_MS);
             SetLayeredWindowAttributes(window,0,(BYTE)(35+220*elapsed/WIDGET_FADE_MS),LWA_ALPHA);
             if(elapsed==WIDGET_FADE_MS){KillTimer(window,WIDGET_FADE_TIMER);g_widget_fade_started=0;}
@@ -456,6 +487,7 @@ static LRESULT CALLBACK DesktopWidgetProcedure(HWND window,UINT message,WPARAM w
         return 0;
     case WM_CLOSE:HideDesktopWidget();return 0;
     case WM_DPICHANGED:{
+        CompleteDesktopWidgetTransition();
         if(g_widget_drag_source&&g_widget_moved)return 0;
         RECT *suggested=(RECT*)lp;
         POINT origin={suggested->left,suggested->top};
@@ -464,11 +496,13 @@ static LRESULT CALLBACK DesktopWidgetProcedure(HWND window,UINT message,WPARAM w
     }
     case WM_DISPLAYCHANGE:
     case WM_SETTINGCHANGE:
+        CompleteDesktopWidgetTransition();
         if(IsWindowVisible(window)&&!g_widget_drag_source)
             PositionDesktopWidget(window,MonitorFromWindow(window,MONITOR_DEFAULTTONEAREST),GetDpiForWindow(window),
                 g_widget_position_saved?&g_widget_position:NULL);
         return 0;
     case WM_DESTROY:
+        CancelDesktopWidgetTransition();
         if(g_desktop_widget_font)DeleteObject(g_desktop_widget_font);
         g_desktop_widget_font=NULL;
         g_widget_tooltip=NULL;
@@ -480,7 +514,10 @@ static LRESULT CALLBACK DesktopWidgetProcedure(HWND window,UINT message,WPARAM w
 
 static void ShowDesktopWidget(void)
 {
-    if(!g_desktop_widget_enabled||g_update_handoff||g_allow_close)return;
+    if(!g_desktop_widget_enabled||g_update_handoff||g_allow_close){
+        CancelDesktopWidgetTransition();return;
+    }
+    if(g_widget_transition.window&&IsWindowVisible(g_desktop_widget))return;
     if(!g_desktop_widget){
         WNDCLASSW cls={.style=CS_DROPSHADOW,.lpfnWndProc=DesktopWidgetProcedure,.hInstance=g_instance,
             .hCursor=LoadCursorW(NULL,IDC_ARROW),.lpszClassName=L"Tasklet.DesktopWidget"};
@@ -488,7 +525,7 @@ static void ShowDesktopWidget(void)
         g_desktop_widget=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_TOPMOST|WS_EX_NOACTIVATE|WS_EX_LAYERED,
             cls.lpszClassName,APP_TITLE L" · Widget",WS_POPUP|WS_CLIPCHILDREN,
             0,0,0,0,NULL,NULL,g_instance,NULL);
-        if(!g_desktop_widget)return;
+        if(!g_desktop_widget){CancelDesktopWidgetTransition();return;}
         wchar_t position[64],extra;
         GetPrivateProfileStringW(L"DesktopWidget",L"Position",L"",position,_countof(position),g_settings_path);
         g_widget_position_saved=swscanf(position,L"%ld,%ld%lc",&g_widget_position.x,&g_widget_position.y,&extra)==2;
@@ -499,11 +536,17 @@ static void ShowDesktopWidget(void)
         GetDpiForWindow(g_desktop_widget):g_dpi;
     PositionDesktopWidget(g_desktop_widget,monitor,dpi,g_widget_position_saved?&g_widget_position:NULL);
     SetWindowTextW(GetDlgItem(g_desktop_widget,WIDGET_HIDE),g_russian?L"Скрыть виджет":L"Hide widget");
-    BOOL fade=CommentAnimationEnabled()&&SetTimer(g_desktop_widget,WIDGET_FADE_TIMER,15,NULL);
-    g_widget_fade_started=fade?GetTickCount64():0;
-    SetLayeredWindowAttributes(g_desktop_widget,0,fade?35:255,LWA_ALPHA);
+    KillTimer(g_desktop_widget,WIDGET_FADE_TIMER);
+    g_widget_fade_started=0;
+    BOOL animate=CommentAnimationEnabled();
+    if(!animate)CancelDesktopWidgetTransition();
+    SetLayeredWindowAttributes(g_desktop_widget,0,g_widget_transition.image?0:animate?35:255,LWA_ALPHA);
     ShowWindow(g_desktop_widget,SW_SHOWNOACTIVATE);
     RefreshDesktopWidgetTask();
     UpdateTimer();
     InvalidateRect(g_desktop_widget,NULL,FALSE);
+    if(StartDesktopWidgetTransition())return;
+    BOOL fade=animate&&SetTimer(g_desktop_widget,WIDGET_FADE_TIMER,15,NULL);
+    g_widget_fade_started=fade?GetTickCount64():0;
+    SetLayeredWindowAttributes(g_desktop_widget,0,fade?35:255,LWA_ALPHA);
 }
